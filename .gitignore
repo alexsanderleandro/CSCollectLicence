@@ -1,0 +1,25 @@
+# Virtual environments
+venv/
+.venv/
+
+# Environment files
+.env
+.env.*
+
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Logs and local files
+*.log
+licenca.key
+
+# Editor directories
+.vscode/
+.idea/
