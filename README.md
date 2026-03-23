@@ -26,6 +26,17 @@ COPY .env.example .env
 
 ```powershell
 python .\licenca.py
+
+Gerar executável (Windows):
+
+1. Opcional: adicione um ícone em `assets/logo.ico` (formato .ico) para ser embutido no executável.
+2. Execute o script de build PowerShell:
+
+```powershell
+.\build_exe.ps1
+```
+
+O build criará `dist\CSCollectLicence.exe`. Depois, forneça `MASTER_KEY` por variável de ambiente ou crie um `.env` no mesmo diretório do executável antes de rodar.
 ```
 
 Alternativa rápida (não persistente) — definir `MASTER_KEY` apenas para a sessão atual do PowerShell:

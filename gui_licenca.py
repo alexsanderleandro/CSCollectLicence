@@ -22,6 +22,7 @@ from licenca import (
     salvar_licenca,
     carregar_licenca_de_arquivo,
 )
+from version import VERSION
 
 
 class LicencaWindow(QMainWindow):
@@ -92,6 +93,10 @@ class LicencaWindow(QMainWindow):
         # mostrado quando carregado
         self.gerado_em_label = QLabel('')
         layout.addWidget(self.gerado_em_label)
+
+        # versão do app
+        self.version_label = QLabel(f'Versão: {VERSION}')
+        layout.addWidget(self.version_label)
 
         self.current_path = None
 
