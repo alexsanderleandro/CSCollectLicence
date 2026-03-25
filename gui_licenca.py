@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QListWidget,
     QPushButton,
-    QSpinBox,
     QLineEdit,
     QLabel,
     QFileDialog,
@@ -26,6 +25,11 @@ from version import VERSION
 
 
 class LicencaWindow(QMainWindow):
+    """Janela principal da aplicação de gerenciamento de licenças.
+
+    Fornece UI para adicionar múltiplos CNPJs e IDs de celular, definir validade,
+    gerar tokens assinados e salvar/carregar o arquivo `licenca.key`.
+    """
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Gerenciador de Licença')
@@ -44,28 +48,31 @@ class LicencaWindow(QMainWindow):
 
         # CNPJs list
         self.cnpj_list = QListWidget()
-        layout.addWidget(QLabel('CNPJs liberados:'))
+        layout.addWidget(QLabel('CNPJs liberados (mínimo 1):'))
         layout.addWidget(self.cnpj_list)
 
         btn_row = QHBoxLayout()
-        btn_add = QPushButton('Adicionar')
+        btn_add = QPushButton('Adicionar CNPJ')
         btn_add.clicked.connect(self.add_cnpj)
-        btn_remove = QPushButton('Remover')
+        btn_remove = QPushButton('Remover CNPJ')
         btn_remove.clicked.connect(self.remove_cnpj)
         btn_row.addWidget(btn_add)
         btn_row.addWidget(btn_remove)
         layout.addLayout(btn_row)
 
-        # max devices
-        hd = QHBoxLayout()
-        hd.addWidget(QLabel('Max devices:'))
-        self.max_devices = QSpinBox()
-        self.max_devices.setMinimum(1)
-        self.max_devices.setMaximum(9999)
-        self.max_devices.setValue(1)
-        hd.addWidget(self.max_devices)
-        hd.addStretch()
-        layout.addLayout(hd)
+        # IDs de celular
+        self.id_celular_list = QListWidget()
+        layout.addWidget(QLabel('IDs de celular liberados (mínimo 1):'))
+        layout.addWidget(self.id_celular_list)
+
+        btn_row2 = QHBoxLayout()
+        btn_add_cel = QPushButton('Adicionar ID Celular')
+        btn_add_cel.clicked.connect(self.add_id_celular)
+        btn_remove_cel = QPushButton('Remover ID Celular')
+        btn_remove_cel.clicked.connect(self.remove_id_celular)
+        btn_row2.addWidget(btn_add_cel)
+        btn_row2.addWidget(btn_remove_cel)
+        layout.addLayout(btn_row2)
 
         # validade
         hd2 = QHBoxLayout()
@@ -101,6 +108,10 @@ class LicencaWindow(QMainWindow):
         self.current_path = None
 
     def add_cnpj(self):
+        """Abre diálogo para inserir um CNPJ, normaliza (apenas dígitos) e adiciona à lista.
+
+        Evita duplicatas.
+        """
         text, ok = QInputDialog.getText(self, 'Adicionar CNPJ', 'CNPJ (apenas dígitos):')
         if ok and text:
             clean = ''.join(ch for ch in text if ch.isdigit())
@@ -113,11 +124,34 @@ class LicencaWindow(QMainWindow):
                 self.cnpj_list.addItem(clean)
 
     def remove_cnpj(self):
+        """Remove o CNPJ selecionado na lista (se houver seleção)."""
         sel = self.cnpj_list.currentRow()
         if sel >= 0:
             self.cnpj_list.takeItem(sel)
 
+    def add_id_celular(self):
+        """Abre diálogo para inserir um ID de celular e adiciona à lista, evitando duplicatas."""
+        text, ok = QInputDialog.getText(self, 'Adicionar ID de Celular', 'ID do celular:')
+        if ok and text:
+            clean = text.strip()
+            if clean:
+                items = [self.id_celular_list.item(i).text() for i in range(self.id_celular_list.count())]
+                if clean in items:
+                    QMessageBox.information(self, 'Info', 'ID de celular já presente.')
+                    return
+                self.id_celular_list.addItem(clean)
+
+    def remove_id_celular(self):
+        """Remove o ID de celular selecionado na lista (se houver seleção)."""
+        sel = self.id_celular_list.currentRow()
+        if sel >= 0:
+            self.id_celular_list.takeItem(sel)
+
     def load_license(self):
+        """Carrega um arquivo de licença (`.key`), valida e popula os campos da GUI.
+
+        Em caso de erro exibe uma mensagem para o usuário.
+        """
         path, _ = QFileDialog.getOpenFileName(self, 'Abrir licença', '', 'License files (*.key);;All files (*)')
         if not path:
             return
@@ -130,7 +164,9 @@ class LicencaWindow(QMainWindow):
         self.cnpj_list.clear()
         for c in payload.get('cnpjs', []):
             self.cnpj_list.addItem(c)
-        self.max_devices.setValue(int(payload.get('max_devices', 1)))
+        self.id_celular_list.clear()
+        for ic in payload.get('ids_celular', []):
+            self.id_celular_list.addItem(ic)
         self.validade.setText(str(payload.get('validade', '')))
         # mostra gerado_em se presente
         ge = payload.get('gerado_em')
@@ -142,10 +178,21 @@ class LicencaWindow(QMainWindow):
         QMessageBox.information(self, 'OK', 'Licença carregada com sucesso.')
 
     def save_license(self):
+        """Gera o token de licença a partir dos campos e salva em arquivo.
+
+        Valida que exista pelo menos um CNPJ e um ID de celular antes de gerar.
+        """
         # collect
         cnpjs = [self.cnpj_list.item(i).text() for i in range(self.cnpj_list.count())]
-        max_dev = self.max_devices.value()
+        ids_celular = [self.id_celular_list.item(i).text() for i in range(self.id_celular_list.count())]
         validade = self.validade.text().strip()
+
+        if not cnpjs:
+            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar pelo menos um CNPJ.')
+            return
+        if not ids_celular:
+            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar pelo menos um ID de celular.')
+            return
 
         path = self.current_path
         if not path:
@@ -159,7 +206,11 @@ class LicencaWindow(QMainWindow):
                 return
 
         try:
-            token = gerar_licenca(cnpjs, max_dev, validade)
+            # Gera o token (string assinada) a partir de todos os CNPJs e IDs de celular.
+            # O token contém o payload JSON e a assinatura HMAC; o mesmo token é salvo
+            # em disco no arquivo `path` para distribuição/instalação.
+            token = gerar_licenca(cnpjs, ids_celular, validade)
+            # Salva o token no arquivo de licença (por padrão: licenca.key)
             salvar_licenca(token, path)
             self.current_path = path
             QMessageBox.information(self, 'OK', f'Licença salva em: {path}')
@@ -167,23 +218,41 @@ class LicencaWindow(QMainWindow):
             QMessageBox.critical(self, 'Erro', f'Falha ao salvar: {e}')
 
     def generate_token_only(self):
+        """Gera o token e o exibe em um diálogo para cópia/colagem.
+
+        Não salva o arquivo; útil para enviar o token por outros canais.
+        """
         cnpjs = [self.cnpj_list.item(i).text() for i in range(self.cnpj_list.count())]
-        max_dev = self.max_devices.value()
+        ids_celular = [self.id_celular_list.item(i).text() for i in range(self.id_celular_list.count())]
         validade = self.validade.text().strip()
+
+        if not cnpjs:
+            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar pelo menos um CNPJ.')
+            return
+        if not ids_celular:
+            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar pelo menos um ID de celular.')
+            return
+
         try:
-            token = gerar_licenca(cnpjs, max_dev, validade)
+            # Gera o token usando `gerar_licenca`. Aqui apenas exibimos o token
+            # resultante para que o usuário possa copiá-lo/colá-lo onde desejar
+            # (ex.: enviar por e-mail, colar em painel de ativação, etc.).
+            token = gerar_licenca(cnpjs, ids_celular, validade)
             dlg = QMessageBox(self)
             dlg.setWindowTitle('Token gerado')
             dlg.setText('Token:')
+            # `setDetailedText` mostra a string completa (útil para copiar)
             dlg.setDetailedText(token)
             dlg.exec()
         except Exception as e:
+            # Em caso de erro (validação, assinatura, etc.) mostramos a mensagem
             QMessageBox.critical(self, 'Erro', f'Falha ao gerar token: {e}')
 
     def new_license(self):
+        """Limpa todos os campos da GUI para criar uma nova licença do zero."""
         # limpa campos para criar nova licença
         self.cnpj_list.clear()
-        self.max_devices.setValue(1)
+        self.id_celular_list.clear()
         self.validade.setText('')
         self.gerado_em_label.setText('')
         self.current_path = None
@@ -191,6 +260,10 @@ class LicencaWindow(QMainWindow):
 
 
 def main():
+    """Inicializa a aplicação Qt e exibe a janela principal.
+
+    Uso: executar este módulo para abrir a interface gráfica.
+    """
     app = QApplication(sys.argv)
     w = LicencaWindow()
     w.resize(700, 400)

@@ -27,36 +27,79 @@ MASTER_KEY_BYTES = MASTER_KEY.encode("utf-8")
 
 
 def _b64u_encode(b: bytes) -> str:
+    """Encode bytes em base64 URL-safe sem padding.
+
+    Retorna uma string ASCII sem os caracteres de preenchimento '='.
+    """
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
 
 
 def _b64u_decode(s: str) -> bytes:
+    """Decodifica uma string base64 URL-safe possivelmente sem padding.
+
+    Reconstitui o padding necessário e retorna os bytes originais.
+    """
     padding = '=' * (-len(s) % 4)
     return base64.urlsafe_b64decode((s + padding).encode('ascii'))
 
 
-def gerar_licenca(cnpjs, max_devices, validade):
+def gerar_licenca(cnpjs, ids_celular, validade):
     """Gera um token de licença.
 
-    Token format: base64url(json_payload) + '.' + base64url(hmac_sha256_signature)
+    O token é uma string compacta e assinada que contém o payload JSON
+    com os campos informados. Formato final:
+
+        base64url(json_payload) + '.' + base64url(hmac_sha256_signature)
+
+    Passos principais:
+    1) Validações: exige pelo menos um CNPJ e pelo menos um ID de celular.
+    2) Constrói o payload (lista de `cnpjs`, `ids_celular`, `validade` e metadados).
+    3) Serializa o payload em JSON UTF-8.
+    4) Calcula HMAC-SHA256 sobre os bytes do JSON usando `MASTER_KEY`.
+    5) Codifica payload e assinatura em base64url e concatena com '.' — esse é o token.
+
+    Observações de uso:
+    - O token pode ser salvo em disco (por exemplo, em `licenca.key`) ou exibido
+      para cópia/colagem. É a única informação necessária para validar a licença
+      no lado do cliente, via `verificar_licenca`.
+    - Mantemos `gerado_em` no payload para rastreabilidade.
     """
+
+    # 1) Validações mínimas de entrada
+    if not cnpjs:
+        raise ValueError("É obrigatório informar pelo menos um CNPJ.")
+    if not ids_celular:
+        raise ValueError("É obrigatório informar pelo menos um ID de celular.")
+
+    # 2) Monta o payload com os dados informados e metadados
     payload = {
         "cnpjs": cnpjs,
-        "max_devices": max_devices,
+        "ids_celular": ids_celular,
         "validade": validade,
         "gerado_em": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
     }
 
+    # 3) Serializa para JSON (bytes UTF-8)
     dados = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
+    # 4) Calcula assinatura HMAC-SHA256 usando a chave mestra
     assinatura = hmac.new(MASTER_KEY_BYTES, dados, hashlib.sha256).digest()
 
+    # 5) Codifica em base64url sem padding e concatena para formar o token
     token = f"{_b64u_encode(dados)}.{_b64u_encode(assinatura)}"
     return token
 
 
 def verificar_licenca(token, validar_validade=True):
-    """Verifica o token. Retorna o payload (dict) se válido, ou lança ValueError/RuntimeError."""
+    """Verifica e valida um token de licença.
+
+    Retorna o payload (dict) decodificado se a assinatura for válida e,
+    se `validar_validade` for True, também verifica se a validade não expirou.
+
+    Lança `ValueError` em casos de formato inválido, assinatura incorreta ou
+    validade expirada. Pode lançar outras exceções de I/O/parse se houverem
+    problemas ao decodificar o payload.
+    """
     try:
         parts = token.split('.')
         if len(parts) != 2:
@@ -100,6 +143,12 @@ def verificar_licenca(token, validar_validade=True):
 
 
 def salvar_licenca(token, caminho="licenca.key"):
+    """Salva o token de licença no arquivo especificado.
+
+    Parâmetros:
+    - token: string do token gerado por `gerar_licenca`.
+    - caminho: caminho do arquivo onde o token será gravado.
+    """
     with open(caminho, "w", encoding='utf-8') as f:
         f.write(token)
 
@@ -117,6 +166,10 @@ def carregar_licenca_de_arquivo(caminho="licenca.key"):
 
 
 def _input_cnpjs_inicial():
+    """Modo interativo: lê vários CNPJs do usuário até linha em branco.
+
+    Retorna uma lista de CNPJs (apenas dígitos), na ordem informada.
+    """
     cnpjs = []
     print("Digite os CNPJs (apenas dígitos). Enter em branco para terminar:")
     while True:
@@ -131,11 +184,15 @@ def _input_cnpjs_inicial():
 
 
 def _menu_edicao(payload):
-    # payload esperado: cnpjs (lista), max_devices, validade
+    """Menu de edição interativo para ajustar o payload da licença.
+
+    Permite adicionar/remover CNPJs e IDs de celular, atualizar validade,
+    e retornar o payload modificado.
+    """
     while True:
         print("\nEstado atual da licença:")
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-        print('\nAções: [a]dicionar CNPJ, [r]emover CNPJ, [u]pdate validade, [s]alvar e sair, [q]cancelar')
+        print('\nAções: [a]dicionar CNPJ, [r]emover CNPJ, [c]adicionar ID celular, [d]remover ID celular, [u]pdate validade, [s]alvar e sair, [q]cancelar')
         op = input('Escolha: ').strip().lower()
         if op == 'a':
             v = input('CNPJ a adicionar: ').strip()
@@ -153,6 +210,20 @@ def _menu_edicao(payload):
                 print('CNPJ removido.')
             else:
                 print('CNPJ não encontrado na licença.')
+        elif op == 'c':
+            v = input('ID de celular a adicionar: ').strip()
+            if v and v not in payload.get('ids_celular', []):
+                payload.setdefault('ids_celular', []).append(v)
+                print('ID de celular adicionado.')
+            else:
+                print('ID inválido ou já presente.')
+        elif op == 'd':
+            v = input('ID de celular a remover: ').strip()
+            if v in payload.get('ids_celular', []):
+                payload['ids_celular'].remove(v)
+                print('ID de celular removido.')
+            else:
+                print('ID de celular não encontrado na licença.')
         elif op == 'u':
             v = input('Nova validade (YYYY-MM-DD ou ISO): ').strip()
             if v:
@@ -181,18 +252,21 @@ if __name__ == "__main__":
             # permitir edição
             payload = _menu_edicao(payload)
             # regenerar token
-            novo_token = gerar_licenca(payload.get('cnpjs', []), payload.get('max_devices', 1), payload.get('validade', ''))
+            novo_token = gerar_licenca(payload.get('cnpjs', []), payload.get('ids_celular', []), payload.get('validade', ''))
             salvar_licenca(novo_token, caminho)
             print('Licença atualizada e salva em', caminho)
         else:
             cnpjs = _input_cnpjs_inicial()
-            max_dev = input('Max devices (padrão 1): ').strip() or '1'
-            try:
-                max_dev_i = int(max_dev)
-            except Exception:
-                max_dev_i = 1
+            ids_celular = []
+            print("Digite os IDs de celular. Enter em branco para terminar:")
+            while True:
+                v = input("ID Celular: ").strip()
+                if not v:
+                    break
+                if v not in ids_celular:
+                    ids_celular.append(v)
             validade = input('Validade (YYYY-MM-DD ou ISO, vazio para sem validade): ').strip()
-            token = gerar_licenca(cnpjs, max_dev_i, validade)
+            token = gerar_licenca(cnpjs, ids_celular, validade)
             caminho = input("Salvar em (padrão 'licenca.key'): ").strip() or 'licenca.key'
             salvar_licenca(token, caminho)
             print('Licença gerada e salva em', caminho)
