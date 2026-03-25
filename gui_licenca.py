@@ -92,6 +92,8 @@ class LicencaWindow(QMainWindow):
         btn_save.clicked.connect(self.save_license)
         btn_generate = QPushButton('Gerar e Mostrar Token')
         btn_generate.clicked.connect(self.generate_token_only)
+        # Botão desabilitado por padrão conforme solicitação
+        btn_generate.setEnabled(False)
         actions.addWidget(btn_load)
         actions.addWidget(btn_save)
         actions.addWidget(btn_generate)
