@@ -17,13 +17,13 @@
                     [
                         StringStruct('CompanyName', 'CEOsoftware'),
                         StringStruct('FileDescription', 'CSCollectLicence'),
-                        StringStruct('FileVersion', '26.03.31 rev. 1'),
-                        StringStruct('InternalName', 'CSCollectManager.exe'),
-                        StringStruct('OriginalFilename', 'CSCollectManager.exe'),
-                        StringStruct('ProductName', 'CSCollect Manager'),
+                        StringStruct('FileVersion', '26.03.31 rev. 3'),
+                        StringStruct('InternalName', 'CSCollectLicence.exe'),
+                        StringStruct('OriginalFilename', 'CSCollectLicence.exe'),
+                        StringStruct('ProductName', 'CSCollectLicence'),
                         StringStruct('CompanyName', 'CEOsoftware'),
                         StringStruct('LegalTrademarks', ''),
-                        StringStruct('ProductVersion', '26.03.31 rev. 1'),
+                        StringStruct('ProductVersion', '26.03.31 rev. 3'),
                         StringStruct('LegalCopyright', 'Copyright © 2026 CEOsoftware')
                     ]
                 )

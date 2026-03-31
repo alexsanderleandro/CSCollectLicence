@@ -19,43 +19,16 @@ $scriptEntry = 'gui_licenca.py'
 $appName = 'CSCollectLicence'
 $addData = "assets;assets"
 $addEnv = ".env;."
-$iconPath = "assets\logo.ico"
+Write-Host "Gerando assets (version_build.txt e logo.ico) via tools/gen_build_assets.py"
+python tools\gen_build_assets.py
+
+$iconIco = "assets\logo.ico"
 $iconArg = ''
-if (Test-Path $iconPath) {
-    $iconArg = "--icon=$iconPath"
+if (Test-Path $iconIco) {
+    $iconArg = "--icon=$iconIco"
 } else {
-    Write-Host "Aviso: ícone '.\assets\logo.ico' não encontrado. O executável será gerado sem ícone." -ForegroundColor Yellow
+    Write-Host "Aviso: nenhum ícone .ico encontrado; o executável será gerado sem ícone." -ForegroundColor Yellow
 }
-
-# Gerar version_build.txt usando Python (menos propenso a problemas de escape)
-$pyScript = @'
-import re
-from pathlib import Path
-vp = Path('version.py').read_text(encoding='utf-8')
-m = re.search(r"VERSION\s*=\s*'([^']*)'", vp)
-ver_full = m.group(1).strip() if m else '0.0.0'
-ver_core = ver_full.split()[0]
-parts = ver_core.split('.')
-while len(parts) < 4:
-    parts.append('0')
-parts = parts[:4]
-filevers = ','.join(str(int(p)) if p.isdigit() else '0' for p in parts)
-vt = Path('version.txt').read_text(encoding='utf-8') if Path('version.txt').exists() else ''
-if vt:
-    vt = re.sub(r'filevers=\([^)]*\)', f'filevers=({filevers})', vt)
-    vt = re.sub(r'prodvers=\([^)]*\)', f'prodvers=({filevers})', vt)
-    vt = re.sub(r"FileVersion', '.*?'", f"FileVersion', '{ver_full}'", vt)
-    vt = re.sub(r"ProductVersion', '.*?'", f"ProductVersion', '{ver_full}'", vt)
-    Path('version_build.txt').write_text(vt, encoding='utf-8')
-    print('WROTE version_build.txt')
-else:
-    print('version.txt not found; skipping version embed')
-'@
-
-$pyFile = '._gen_version_tmp.py'
-Set-Content -Path $pyFile -Value $pyScript -Encoding UTF8
-python $pyFile
-Remove-Item $pyFile -ErrorAction SilentlyContinue
 
 $versionArg = ''
 if (Test-Path 'version_build.txt') { $versionArg = "--version-file=version_build.txt" }

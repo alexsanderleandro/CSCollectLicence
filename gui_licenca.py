@@ -9,12 +9,15 @@ from PySide6.QtWidgets import (
     QListWidget,
     QPushButton,
     QLineEdit,
+    QDateEdit,
+    QCheckBox,
     QLabel,
     QFileDialog,
     QMessageBox,
     QInputDialog,
 )
 from PySide6.QtGui import QIcon
+from PySide6.QtCore import QDate
 
 from licenca import (
     gerar_licenca,
@@ -74,11 +77,18 @@ class LicencaWindow(QMainWindow):
         btn_row2.addWidget(btn_remove_cel)
         layout.addLayout(btn_row2)
 
-        # validade
+        # validade (date picker) + opção 'sem validade'
         hd2 = QHBoxLayout()
-        hd2.addWidget(QLabel('Validade (YYYY-MM-DD, vazio = sem validade):'))
-        self.validade = QLineEdit()
+        hd2.addWidget(QLabel('Validade:'))
+        self.validade = QDateEdit()
+        self.validade.setCalendarPopup(True)
+        self.validade.setDisplayFormat('yyyy-MM-dd')
+        # default to today
+        self.validade.setDate(QDate.currentDate())
         hd2.addWidget(self.validade)
+        self.sem_validade_cb = QCheckBox('Sem validade')
+        self.sem_validade_cb.toggled.connect(lambda checked: self.validade.setEnabled(not checked))
+        hd2.addWidget(self.sem_validade_cb)
         layout.addLayout(hd2)
 
         # actions
@@ -90,13 +100,8 @@ class LicencaWindow(QMainWindow):
         btn_load.clicked.connect(self.load_license)
         btn_save = QPushButton('Salvar')
         btn_save.clicked.connect(self.save_license)
-        btn_generate = QPushButton('Gerar e Mostrar Token')
-        btn_generate.clicked.connect(self.generate_token_only)
-        # Botão desabilitado por padrão conforme solicitação
-        btn_generate.setEnabled(False)
         actions.addWidget(btn_load)
         actions.addWidget(btn_save)
-        actions.addWidget(btn_generate)
         layout.addLayout(actions)
 
         # mostrado quando carregado
@@ -169,7 +174,22 @@ class LicencaWindow(QMainWindow):
         self.id_celular_list.clear()
         for ic in payload.get('ids_celular', []):
             self.id_celular_list.addItem(ic)
-        self.validade.setText(str(payload.get('validade', '')))
+        vt = payload.get('validade', '')
+        if not vt:
+            self.sem_validade_cb.setChecked(True)
+            self.validade.setEnabled(False)
+        else:
+            self.sem_validade_cb.setChecked(False)
+            # parse expected format YYYY-MM-DD
+            try:
+                d = QDate.fromString(str(vt), 'yyyy-MM-dd')
+                if d.isValid():
+                    self.validade.setDate(d)
+                else:
+                    # fallback: set text as is by attempting parse with Qt
+                    self.validade.setDate(QDate.currentDate())
+            except Exception:
+                self.validade.setDate(QDate.currentDate())
         # mostra gerado_em se presente
         ge = payload.get('gerado_em')
         if ge:
@@ -187,7 +207,11 @@ class LicencaWindow(QMainWindow):
         # collect
         cnpjs = [self.cnpj_list.item(i).text() for i in range(self.cnpj_list.count())]
         ids_celular = [self.id_celular_list.item(i).text() for i in range(self.id_celular_list.count())]
-        validade = self.validade.text().strip()
+        if getattr(self, 'sem_validade_cb', None) and self.sem_validade_cb.isChecked():
+            validade = ''
+        else:
+            # QDateEdit -> string in yyyy-MM-dd
+            validade = self.validade.date().toString('yyyy-MM-dd')
 
         if not cnpjs:
             QMessageBox.warning(self, 'Atenção', 'É obrigatório informar pelo menos um CNPJ.')
@@ -224,38 +248,17 @@ class LicencaWindow(QMainWindow):
 
         Não salva o arquivo; útil para enviar o token por outros canais.
         """
-        cnpjs = [self.cnpj_list.item(i).text() for i in range(self.cnpj_list.count())]
-        ids_celular = [self.id_celular_list.item(i).text() for i in range(self.id_celular_list.count())]
-        validade = self.validade.text().strip()
-
-        if not cnpjs:
-            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar pelo menos um CNPJ.')
-            return
-        if not ids_celular:
-            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar pelo menos um ID de celular.')
-            return
-
-        try:
-            # Gera o token usando `gerar_licenca`. Aqui apenas exibimos o token
-            # resultante para que o usuário possa copiá-lo/colá-lo onde desejar
-            # (ex.: enviar por e-mail, colar em painel de ativação, etc.).
-            token = gerar_licenca(cnpjs, ids_celular, validade)
-            dlg = QMessageBox(self)
-            dlg.setWindowTitle('Token gerado')
-            dlg.setText('Token:')
-            # `setDetailedText` mostra a string completa (útil para copiar)
-            dlg.setDetailedText(token)
-            dlg.exec()
-        except Exception as e:
-            # Em caso de erro (validação, assinatura, etc.) mostramos a mensagem
-            QMessageBox.critical(self, 'Erro', f'Falha ao gerar token: {e}')
+        # removido: geração direta de token via botão (fluxo mantido no salvar)
+        return
 
     def new_license(self):
         """Limpa todos os campos da GUI para criar uma nova licença do zero."""
         # limpa campos para criar nova licença
         self.cnpj_list.clear()
         self.id_celular_list.clear()
-        self.validade.setText('')
+        self.sem_validade_cb.setChecked(False)
+        self.validade.setEnabled(True)
+        self.validade.setDate(QDate.currentDate())
         self.gerado_em_label.setText('')
         self.current_path = None
         QMessageBox.information(self, 'Novo', 'Criando nova licença — preencha os campos e clique em Salvar.')
