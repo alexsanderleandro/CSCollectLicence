@@ -76,7 +76,7 @@ class LicencaWindow(QMainWindow):
 
         # validade
         hd2 = QHBoxLayout()
-        hd2.addWidget(QLabel('Validade (YYYY-MM-DD ou ISO, vazio = sem validade):'))
+        hd2.addWidget(QLabel('Validade (YYYY-MM-DD, vazio = sem validade):'))
         self.validade = QLineEdit()
         hd2.addWidget(self.validade)
         layout.addLayout(hd2)

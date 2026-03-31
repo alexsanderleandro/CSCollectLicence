@@ -10,8 +10,20 @@ from datetime import datetime, date, timezone
 # Tenta carregar variáveis de ambiente a partir de um arquivo .env, se disponível
 try:
     from dotenv import load_dotenv
+    import sys
 
-    load_dotenv()
+    if getattr(sys, 'frozen', False):
+        # Executável congelado pelo PyInstaller
+        # 1. Tenta o .env extraído no diretório temporário (sys._MEIPASS)
+        _meipass_env = os.path.join(sys._MEIPASS, '.env')
+        if os.path.isfile(_meipass_env):
+            load_dotenv(_meipass_env)
+        # 2. Tenta o .env ao lado do próprio executável
+        _exe_env = os.path.join(os.path.dirname(sys.executable), '.env')
+        if os.path.isfile(_exe_env):
+            load_dotenv(_exe_env, override=False)
+    else:
+        load_dotenv()
 except Exception:
     # `python-dotenv` pode não estar instalado — isso é opcional.
     pass
