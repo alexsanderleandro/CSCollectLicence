@@ -55,7 +55,7 @@ def _b64u_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode((s + padding).encode('ascii'))
 
 
-def gerar_licenca(cnpjs, ids_celular, validade):
+def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente):
     """Gera um token de licença.
 
     O token é uma string compacta e assinada que contém o payload JSON
@@ -64,7 +64,8 @@ def gerar_licenca(cnpjs, ids_celular, validade):
         base64url(json_payload) + '.' + base64url(hmac_sha256_signature)
 
     Passos principais:
-    1) Validações: exige pelo menos um CNPJ e pelo menos um ID de celular.
+     1) Validações: exige pelo menos um CNPJ, pelo menos um ID de celular
+         e um `nome_cliente` (máx 30 caracteres).
     2) Constrói o payload (lista de `cnpjs`, `ids_celular`, `validade` e metadados).
     3) Serializa o payload em JSON UTF-8.
     4) Calcula HMAC-SHA256 sobre os bytes do JSON usando `MASTER_KEY`.
@@ -82,12 +83,19 @@ def gerar_licenca(cnpjs, ids_celular, validade):
         raise ValueError("É obrigatório informar pelo menos um CNPJ.")
     if not ids_celular:
         raise ValueError("É obrigatório informar pelo menos um ID de celular.")
+    # valida nome do cliente
+    if not nome_cliente or not str(nome_cliente).strip():
+        raise ValueError("É obrigatório informar o nome do cliente.")
+    nome_cliente = str(nome_cliente).strip()
+    if len(nome_cliente) > 30:
+        raise ValueError("O nome do cliente deve ter no máximo 30 caracteres.")
 
     # 2) Monta o payload com os dados informados e metadados
     payload = {
         "cnpjs": cnpjs,
         "ids_celular": ids_celular,
         "validade": validade,
+        "nome_cliente": nome_cliente,
         "gerado_em": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
     }
 
@@ -264,7 +272,12 @@ if __name__ == "__main__":
             # permitir edição
             payload = _menu_edicao(payload)
             # regenerar token
-            novo_token = gerar_licenca(payload.get('cnpjs', []), payload.get('ids_celular', []), payload.get('validade', ''))
+            novo_token = gerar_licenca(
+                payload.get('cnpjs', []),
+                payload.get('ids_celular', []),
+                payload.get('validade', ''),
+                payload.get('nome_cliente', ''),
+            )
             salvar_licenca(novo_token, caminho)
             print('Licença atualizada e salva em', caminho)
         else:
@@ -278,8 +291,25 @@ if __name__ == "__main__":
                 if v not in ids_celular:
                     ids_celular.append(v)
             validade = input('Validade (YYYY-MM-DD ou ISO, vazio para sem validade): ').strip()
-            token = gerar_licenca(cnpjs, ids_celular, validade)
-            caminho = input("Salvar em (padrão 'licenca.key'): ").strip() or 'licenca.key'
+            # solicita nome do cliente (obrigatório, máx 30)
+            nome_cliente = ''
+            while True:
+                nome_cliente = input('Nome do cliente (obrigatório, máx 30): ').strip()
+                if not nome_cliente:
+                    print('Nome do cliente é obrigatório.')
+                    continue
+                if len(nome_cliente) > 30:
+                    print('Nome muito longo (máx 30 caracteres).')
+                    continue
+                break
+
+            token = gerar_licenca(cnpjs, ids_celular, validade, nome_cliente)
+            # nome padrão do arquivo
+            safe = ''.join(ch for ch in nome_cliente if (ch.isalnum() or ch in (' ', '_', '-'))).strip().replace(' ', '_')
+            if not safe:
+                safe = 'cliente'
+            default_name = f"Licenca_CSCollectManager_{safe}.key"
+            caminho = input(f"Salvar em (padrão '{default_name}'): ").strip() or default_name
             salvar_licenca(token, caminho)
             print('Licença gerada e salva em', caminho)
     except KeyboardInterrupt:

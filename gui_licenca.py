@@ -62,6 +62,13 @@ class LicencaWindow(QMainWindow):
             self.header_label.setFixedHeight(56)
             layout.addWidget(self.header_label)
 
+        # Nome do cliente (obrigatório, max 30)
+        layout.addWidget(QLabel('Nome do cliente (máx 30 caracteres):'))
+        self.nome_cliente_edit = QLineEdit()
+        self.nome_cliente_edit.setMaxLength(30)
+        self.nome_cliente_edit.setPlaceholderText('Nome do cliente vinculado à licença')
+        layout.addWidget(self.nome_cliente_edit)
+
         # CNPJs list
         self.cnpj_list = QListWidget()
         layout.addWidget(QLabel('CNPJs liberados (mínimo 1):'))
@@ -181,6 +188,11 @@ class LicencaWindow(QMainWindow):
             QMessageBox.critical(self, 'Erro', f'Falha ao carregar: {e}')
             return
         # populate fields
+        # nome do cliente, se presente
+        nome = payload.get('nome_cliente', '')
+        if getattr(self, 'nome_cliente_edit', None):
+            self.nome_cliente_edit.setText(nome)
+
         self.cnpj_list.clear()
         for c in payload.get('cnpjs', []):
             self.cnpj_list.addItem(c)
@@ -233,9 +245,25 @@ class LicencaWindow(QMainWindow):
             QMessageBox.warning(self, 'Atenção', 'É obrigatório informar pelo menos um ID de celular.')
             return
 
+        # nome do cliente obrigatório
+        nome_cliente = ''
+        if getattr(self, 'nome_cliente_edit', None):
+            nome_cliente = self.nome_cliente_edit.text().strip()
+        if not nome_cliente:
+            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar o nome do cliente (máx 30 caracteres).')
+            return
+        if len(nome_cliente) > 30:
+            QMessageBox.warning(self, 'Atenção', 'O nome do cliente deve ter no máximo 30 caracteres.')
+            return
+
         path = self.current_path
         if not path:
-            path, _ = QFileDialog.getSaveFileName(self, 'Salvar licença', 'licenca.key', 'License files (*.key);;All files (*)')
+            # cria nome padrão do arquivo usando o nome do cliente
+            safe = ''.join(ch for ch in nome_cliente if (ch.isalnum() or ch in (' ', '_', '-'))).strip().replace(' ', '_')
+            if not safe:
+                safe = 'cliente'
+            default_name = f'Licenca_CSCollectManager_{safe}.key'
+            path, _ = QFileDialog.getSaveFileName(self, 'Salvar licença', default_name, 'License files (*.key);;All files (*)')
             if not path:
                 return
         # confirmação antes de sobrescrever
@@ -248,7 +276,7 @@ class LicencaWindow(QMainWindow):
             # Gera o token (string assinada) a partir de todos os CNPJs e IDs de celular.
             # O token contém o payload JSON e a assinatura HMAC; o mesmo token é salvo
             # em disco no arquivo `path` para distribuição/instalação.
-            token = gerar_licenca(cnpjs, ids_celular, validade)
+            token = gerar_licenca(cnpjs, ids_celular, validade, nome_cliente)
             # Salva o token no arquivo de licença (por padrão: licenca.key)
             salvar_licenca(token, path)
             self.current_path = path
@@ -273,6 +301,8 @@ class LicencaWindow(QMainWindow):
         self.validade.setEnabled(True)
         self.validade.setDate(QDate.currentDate())
         self.gerado_em_label.setText('')
+        if getattr(self, 'nome_cliente_edit', None):
+            self.nome_cliente_edit.setText('')
         self.current_path = None
         QMessageBox.information(self, 'Novo', 'Criando nova licença — preencha os campos e clique em Salvar.')
 
