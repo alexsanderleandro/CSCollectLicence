@@ -91,12 +91,13 @@ def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente):
         raise ValueError("O nome do cliente deve ter no máximo 30 caracteres.")
 
     # 2) Monta o payload com os dados informados e metadados
+    # registrar hora local com offset correto (ex: 2026-04-01T12:34:56+03:00)
     payload = {
         "cnpjs": cnpjs,
         "ids_celular": ids_celular,
         "validade": validade,
         "nome_cliente": nome_cliente,
-        "gerado_em": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
+        "gerado_em": datetime.now().astimezone().replace(microsecond=0).isoformat(),
     }
 
     # 3) Serializa para JSON (bytes UTF-8)
