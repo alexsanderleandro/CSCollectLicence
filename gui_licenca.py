@@ -73,7 +73,7 @@ class LicencaWindow(QMainWindow):
         row_sql = QHBoxLayout()
 
         col_servidor = QVBoxLayout()
-        col_servidor.addWidget(QLabel('Servidor SQL (máx 30 caracteres):'))
+        col_servidor.addWidget(QLabel('Servidor SQL:'))
         self.sql_servidor_edit = QLineEdit()
         self.sql_servidor_edit.setMaxLength(30)
         self.sql_servidor_edit.setPlaceholderText('Nome do servidor SQL')
@@ -81,7 +81,7 @@ class LicencaWindow(QMainWindow):
         row_sql.addLayout(col_servidor)
 
         col_banco = QVBoxLayout()
-        col_banco.addWidget(QLabel('Banco de dados (máx 30 caracteres):'))
+        col_banco.addWidget(QLabel('Banco de dados:'))
         self.sql_banco_edit = QLineEdit()
         self.sql_banco_edit.setMaxLength(30)
         self.sql_banco_edit.setPlaceholderText('Nome do banco de dados')
