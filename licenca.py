@@ -55,7 +55,7 @@ def _b64u_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode((s + padding).encode('ascii'))
 
 
-def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente):
+def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco):
     """Gera um token de licença.
 
     O token é uma string compacta e assinada que contém o payload JSON
@@ -90,6 +90,18 @@ def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente):
     if len(nome_cliente) > 30:
         raise ValueError("O nome do cliente deve ter no máximo 30 caracteres.")
 
+    # valida servidor SQL e banco
+    if not sql_servidor or not str(sql_servidor).strip():
+        raise ValueError("É obrigatório informar o nome do servidor SQL.")
+    sql_servidor = str(sql_servidor).strip()
+    if len(sql_servidor) > 30:
+        raise ValueError("O nome do servidor SQL deve ter no máximo 30 caracteres.")
+    if not sql_banco or not str(sql_banco).strip():
+        raise ValueError("É obrigatório informar o nome do banco de dados.")
+    sql_banco = str(sql_banco).strip()
+    if len(sql_banco) > 30:
+        raise ValueError("O nome do banco de dados deve ter no máximo 30 caracteres.")
+
     # 2) Monta o payload com os dados informados e metadados
     # registrar hora local com offset correto (ex: 2026-04-01T12:34:56+03:00)
     payload = {
@@ -97,6 +109,8 @@ def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente):
         "ids_celular": ids_celular,
         "validade": validade,
         "nome_cliente": nome_cliente,
+        "sql_servidor": sql_servidor,
+        "sql_banco": sql_banco,
         "gerado_em": datetime.now().astimezone().replace(microsecond=0).isoformat(),
     }
 
@@ -278,6 +292,8 @@ if __name__ == "__main__":
                 payload.get('ids_celular', []),
                 payload.get('validade', ''),
                 payload.get('nome_cliente', ''),
+                payload.get('sql_servidor', ''),
+                payload.get('sql_banco', ''),
             )
             salvar_licenca(novo_token, caminho)
             print('Licença atualizada e salva em', caminho)
@@ -304,7 +320,30 @@ if __name__ == "__main__":
                     continue
                 break
 
-            token = gerar_licenca(cnpjs, ids_celular, validade, nome_cliente)
+            # solicita servidor SQL e banco (mesma lógica)
+            sql_servidor = ''
+            while True:
+                sql_servidor = input('Servidor SQL (obrigatório, máx 30): ').strip()
+                if not sql_servidor:
+                    print('Servidor SQL é obrigatório.')
+                    continue
+                if len(sql_servidor) > 30:
+                    print('Nome do servidor muito longo (máx 30 caracteres).')
+                    continue
+                break
+
+            sql_banco = ''
+            while True:
+                sql_banco = input('Banco de dados (obrigatório, máx 30): ').strip()
+                if not sql_banco:
+                    print('Nome do banco é obrigatório.')
+                    continue
+                if len(sql_banco) > 30:
+                    print('Nome do banco muito longo (máx 30 caracteres).')
+                    continue
+                break
+
+            token = gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco)
             # nome padrão do arquivo
             safe = ''.join(ch for ch in nome_cliente if (ch.isalnum() or ch in (' ', '_', '-'))).strip().replace(' ', '_')
             if not safe:

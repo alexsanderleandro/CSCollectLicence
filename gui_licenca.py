@@ -69,6 +69,27 @@ class LicencaWindow(QMainWindow):
         self.nome_cliente_edit.setPlaceholderText('Nome do cliente vinculado à licença')
         layout.addWidget(self.nome_cliente_edit)
 
+        # Linha com Servidor SQL e Nome do Banco (cada um: caption em cima, textbox embaixo)
+        row_sql = QHBoxLayout()
+
+        col_servidor = QVBoxLayout()
+        col_servidor.addWidget(QLabel('Servidor SQL (máx 30 caracteres):'))
+        self.sql_servidor_edit = QLineEdit()
+        self.sql_servidor_edit.setMaxLength(30)
+        self.sql_servidor_edit.setPlaceholderText('Nome do servidor SQL')
+        col_servidor.addWidget(self.sql_servidor_edit)
+        row_sql.addLayout(col_servidor)
+
+        col_banco = QVBoxLayout()
+        col_banco.addWidget(QLabel('Banco de dados (máx 30 caracteres):'))
+        self.sql_banco_edit = QLineEdit()
+        self.sql_banco_edit.setMaxLength(30)
+        self.sql_banco_edit.setPlaceholderText('Nome do banco de dados')
+        col_banco.addWidget(self.sql_banco_edit)
+        row_sql.addLayout(col_banco)
+
+        layout.addLayout(row_sql)
+
         # CNPJs list
         self.cnpj_list = QListWidget()
         layout.addWidget(QLabel('CNPJs liberados (mínimo 1):'))
@@ -193,6 +214,14 @@ class LicencaWindow(QMainWindow):
         if getattr(self, 'nome_cliente_edit', None):
             self.nome_cliente_edit.setText(nome)
 
+        # servidor SQL e banco, se presentes
+        sql_servidor = payload.get('sql_servidor', '')
+        sql_banco = payload.get('sql_banco', '')
+        if getattr(self, 'sql_servidor_edit', None):
+            self.sql_servidor_edit.setText(sql_servidor)
+        if getattr(self, 'sql_banco_edit', None):
+            self.sql_banco_edit.setText(sql_banco)
+
         self.cnpj_list.clear()
         for c in payload.get('cnpjs', []):
             self.cnpj_list.addItem(c)
@@ -256,6 +285,26 @@ class LicencaWindow(QMainWindow):
             QMessageBox.warning(self, 'Atenção', 'O nome do cliente deve ter no máximo 30 caracteres.')
             return
 
+        # servidor SQL e banco (mesma lógica)
+        sql_servidor = ''
+        sql_banco = ''
+        if getattr(self, 'sql_servidor_edit', None):
+            sql_servidor = self.sql_servidor_edit.text().strip()
+        if getattr(self, 'sql_banco_edit', None):
+            sql_banco = self.sql_banco_edit.text().strip()
+        if not sql_servidor:
+            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar o nome do servidor SQL (máx 30 caracteres).')
+            return
+        if len(sql_servidor) > 30:
+            QMessageBox.warning(self, 'Atenção', 'O nome do servidor SQL deve ter no máximo 30 caracteres.')
+            return
+        if not sql_banco:
+            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar o nome do banco de dados (máx 30 caracteres).')
+            return
+        if len(sql_banco) > 30:
+            QMessageBox.warning(self, 'Atenção', 'O nome do banco de dados deve ter no máximo 30 caracteres.')
+            return
+
         path = self.current_path
         if not path:
             # cria nome padrão do arquivo usando o nome do cliente
@@ -276,7 +325,7 @@ class LicencaWindow(QMainWindow):
             # Gera o token (string assinada) a partir de todos os CNPJs e IDs de celular.
             # O token contém o payload JSON e a assinatura HMAC; o mesmo token é salvo
             # em disco no arquivo `path` para distribuição/instalação.
-            token = gerar_licenca(cnpjs, ids_celular, validade, nome_cliente)
+            token = gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco)
             # Salva o token no arquivo de licença (por padrão: licenca.key)
             salvar_licenca(token, path)
             self.current_path = path
@@ -303,6 +352,10 @@ class LicencaWindow(QMainWindow):
         self.gerado_em_label.setText('')
         if getattr(self, 'nome_cliente_edit', None):
             self.nome_cliente_edit.setText('')
+        if getattr(self, 'sql_servidor_edit', None):
+            self.sql_servidor_edit.setText('')
+        if getattr(self, 'sql_banco_edit', None):
+            self.sql_banco_edit.setText('')
         self.current_path = None
         QMessageBox.information(self, 'Novo', 'Criando nova licença — preencha os campos e clique em Salvar.')
 
