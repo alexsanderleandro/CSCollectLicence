@@ -35,8 +35,9 @@ def make_version_build():
 def make_icon():
     png = Path('assets') / 'logo.png'
     ico = Path('assets') / 'logo.ico'
-    if ico.exists():
-        print('assets/logo.ico already exists')
+    # Always regenerate ico to ensure latest image and preferred compression/sizes
+    if not png.exists():
+        print('no assets/logo.png found; skipping icon generation')
         return
     if not png.exists():
         print('no assets/logo.png found; skipping icon generation')
@@ -46,9 +47,11 @@ def make_icon():
     except Exception as e:
         print('Pillow not installed; cannot convert PNG to ICO')
         return
-    im = Image.open(png)
-    im.save(ico, format='ICO', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])
-    print('WROTE assets/logo.ico')
+    im = Image.open(png).convert('RGBA')
+    # Save with multiple sizes; Pillow will use PNG-compressed image for 256x256 when available
+    sizes = [(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]
+    im.save(ico, format='ICO', sizes=sizes)
+    print('WROTE assets/logo.ico (regenerated)')
 
 
 def main():
