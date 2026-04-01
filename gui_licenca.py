@@ -36,11 +36,16 @@ class LicencaWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Gerenciador de Licença')
-        # tenta carregar ícone da pasta assets (svg ou png)
         base = os.path.dirname(__file__)
+        # prefere o arquivo .ico para o ícone da janela
+        icon_ico = os.path.join(base, 'assets', 'logo.ico')
         icon_svg = os.path.join(base, 'assets', 'logo.svg')
         icon_png = os.path.join(base, 'assets', 'logo.png')
-        icon_path = icon_svg if os.path.exists(icon_svg) else (icon_png if os.path.exists(icon_png) else None)
+        icon_path = (
+            icon_ico
+            if os.path.exists(icon_ico)
+            else (icon_svg if os.path.exists(icon_svg) else (icon_png if os.path.exists(icon_png) else None))
+        )
         if icon_path:
             self.setWindowIcon(QIcon(icon_path))
 
@@ -48,6 +53,14 @@ class LicencaWindow(QMainWindow):
         self.setCentralWidget(central)
 
         layout = QVBoxLayout(central)
+
+        # cabeçalho com o logo (usa o mesmo .ico gerado para o executável quando disponível)
+        self.header_label = QLabel()
+        logo_path = icon_ico if os.path.exists(icon_ico) else (icon_png if os.path.exists(icon_png) else None)
+        if logo_path:
+            self.header_label.setPixmap(QIcon(logo_path).pixmap(48, 48))
+            self.header_label.setFixedHeight(56)
+            layout.addWidget(self.header_label)
 
         # CNPJs list
         self.cnpj_list = QListWidget()
