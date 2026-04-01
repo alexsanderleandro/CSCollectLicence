@@ -48,3 +48,32 @@ $env:MASTER_KEY='SUA_CHAVE_DE_TESTE'; python .\licenca.py
 Segurança:
 - Nunca comite sua `MASTER_KEY` em repositórios públicos.
 - Para produção, guarde a chave em um cofre de segredos (Key Vault, AWS Secrets Manager, Windows Credential Manager, etc.).
+
+Como o CSCollectManager deve carregar `MASTER_KEY`
+-----------------------------------------------
+
+O validador de licença usado pelo CSCollectManager precisa da mesma `MASTER_KEY`
+utilizada para gerar o arquivo `.key`. Recomenda-se uma das seguintes abordagens
+para carregar a chave no processo do CSCollectManager:
+
+- Variável de ambiente (recomendado): defina `MASTER_KEY` no ambiente do
+	sistema ou do serviço que roda o CSCollectManager. Exemplo PowerShell temporário:
+
+```powershell
+$env:MASTER_KEY='SUA_MASTER_KEY_SECRETA'
+# Em seguida inicie o executável do CSCollectManager no mesmo terminal/session
+```
+
+- Arquivo `.env` ao lado do executável: crie um arquivo `.env` contendo `MASTER_KEY=...`
+	e carregue-o com `python-dotenv` no startup do app. O projeto já inclui lógica
+	para procurar e carregar `.env` quando empacotado com PyInstaller (veja `licenca.py`).
+
+- Parâmetro de configuração/console: passe a chave por parâmetro ou fonte de
+	configuração segura (cofre de segredos) na inicialização do serviço.
+
+Notas úteis:
+- Garanta que o processo que valida a licença remova aspas em torno do valor
+	(ex.: `.env` com `MASTER_KEY='valor'` deve ser interpretado como `valor`).
+- Ao implementar em C#/.NET, use decodificação base64 URL-safe e HMAC-SHA256
+	com a mesma chave. Um helper C# de exemplo está disponível no repositório
+	(veja histórico de commits / mensagens do workspace).
