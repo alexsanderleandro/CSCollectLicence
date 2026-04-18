@@ -10,7 +10,8 @@ CREATE TABLE clientes (
   idcelular TEXT,
   token TEXT NOT NULL,
   validade VARCHAR(10),
-  ativo BOOLEAN DEFAULT true
+  ativo BOOLEAN DEFAULT true,
+  nome_cliente VARCHAR(30)
 );
 ```
 
@@ -23,6 +24,7 @@ CREATE TABLE clientes (
 | `token` | TEXT | Token assinado (HMAC-SHA256) contendo todos os dados da licença em formato base64url |
 | `validade` | VARCHAR(10) | Data de validade no formato YYYY-MM-DD.<br>Exemplo: `"2026-12-31"` ou `NULL` para sem validade |
 | `ativo` | BOOLEAN | Flag para indicar se o registro está ativo (padrão: `true`) |
+| `nome_cliente` | VARCHAR(30) | Nome do cliente vinculado à licença (máx 30 caracteres).<br>Exemplo: `"Empresa ABC Ltda"` |
 
 ---
 
@@ -45,7 +47,8 @@ CREATE TABLE clientes (
      "cnpjs": ["12345678000199", "98765432000188"],
      "ids": ["device-1", "device-2"],
      "token": "eyJjbnBqc...",
-     "validade": "2026-12-31"
+     "validade": "2026-12-31",
+     "database_url": "postgresql://user:pass@host:5432/db"
    }
    ```
 
@@ -54,6 +57,7 @@ CREATE TABLE clientes (
    - IDs celular → concatenados com vírgula
    - Insere **1 registro único**
    - Usa `ON CONFLICT (cnpj) DO UPDATE` para atualizar se já existir
+   - Se a string de CNPJs foi modificada (adição/remoção), **deleta o registro antigo** antes de inserir o novo
 
 ---
 
@@ -63,12 +67,13 @@ CREATE TABLE clientes (
 - CNPJs: `65391113000120`, `21581137000157`
 - IDs: `a3e9e3a0a4659652`
 - Validade: `2026-05-01`
+- Nome: `Empresa XYZ`
 
 **Registro no banco:**
 
-| cnpj | idcelular | token | validade | ativo |
-|------|-----------|-------|----------|-------|
-| 65391113000120,21581137000157 | a3e9e3a0a4659652 | eyJjbnBqcyI6WyI2NTM5M... | 2026-05-01 | true |
+| cnpj | idcelular | token | validade | ativo | nome_cliente |
+|------|-----------|-------|----------|-------|-------------|
+| 65391113000120,21581137000157 | a3e9e3a0a4659652 | eyJjbnBqcyI6WyI2NTM5M... | 2026-05-01 | true | Empresa XYZ |
 
 ---
 

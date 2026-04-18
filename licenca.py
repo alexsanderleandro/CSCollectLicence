@@ -193,14 +193,14 @@ def salvar_licenca(token, caminho="licenca.key", payload_meta=None):
 
     Comportamentos:
     - Se `payload_meta` for fornecido (dict), salva um JSON contendo
-      os campos recomendados do manager: `cnpjs`, `ids`, `token`, `validade`.
+      os campos recomendados do manager: `cnpjs`, `ids`, `token`, `validade`, `database_url`.
     - Caso contrário, salva apenas a string do token (compatibilidade).
 
     Parâmetros:
     - token: string do token gerado por `gerar_licenca`.
     - caminho: caminho do arquivo onde será gravado.
     - payload_meta: dict opcional com chaves semelhantes ao payload
-      (por exemplo: {'cnpjs': [...], 'ids_celular': [...], 'validade': 'YYYY-MM-DD'}).
+      (por exemplo: {'cnpjs': [...], 'ids_celular': [...], 'validade': 'YYYY-MM-DD', 'database_url': '...'}).
     """
     if payload_meta:
         # Normaliza nomes: nosso payload usa `ids_celular`, mas o manager
@@ -210,6 +210,7 @@ def salvar_licenca(token, caminho="licenca.key", payload_meta=None):
             "ids": payload_meta.get("ids") or payload_meta.get("ids_celular") or [],
             "token": token,
             "validade": payload_meta.get("validade"),
+            "database_url": payload_meta.get("database_url"),
         }
         # grava JSON legível (utf-8)
         with open(caminho, "w", encoding='utf-8') as f:
@@ -367,7 +368,36 @@ def registrar_tokens_por_cnpjs(cnpjs, token):
         raise RuntimeError('Tipo de configuração desconhecido.')
 
 
-def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', ativa=True):
+def deletar_registro_por_cnpjs(cnpjs_str):
+    """Deleta um registro da tabela `clientes` pela chave primária cnpj.
+    
+    Parâmetros:
+    - cnpjs_str: string com CNPJs separados por vírgula (chave primária)
+    """
+    if not cnpjs_str:
+        return
+    
+    # Tenta obter configuração (env ou JSON)
+    db_config = None
+    if get_database_config:
+        db_config = get_database_config()
+    
+    # Fallback: tenta env direto
+    if not db_config:
+        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
+        if db_url:
+            db_config = {'type': 'sql', 'url': db_url}
+    
+    if not db_config:
+        raise RuntimeError('Configuração de banco não encontrada. Execute config.py ou defina DATABASE_URL.')
+    
+    # Executa DELETE
+    q = "DELETE FROM clientes WHERE cnpj = %s;"
+    statements = [(q, (cnpjs_str,))]
+    return _exec_db_statements(statements)
+
+
+def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', ativa=True, nome_cliente=''):
     """Insere/atualiza um ÚNICO registro na tabela `clientes` com CNPJs e IDs separados por vírgula.
     
     Parâmetros:
@@ -376,8 +406,9 @@ def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', at
     - token: token assinado
     - validade: data de validade (YYYY-MM-DD) ou string vazia para sem validade
     - ativa: boolean indicando se a licença está ativa (padrão: True)
+    - nome_cliente: nome do cliente vinculado à licença (máx 30 caracteres)
     
-    Tabela esperada: clientes (cnpj VARCHAR PRIMARY KEY, idcelular TEXT, token TEXT, validade VARCHAR, ativo BOOLEAN)
+    Tabela esperada: clientes (cnpj VARCHAR PRIMARY KEY, idcelular TEXT, token TEXT, validade VARCHAR, ativo BOOLEAN, nome_cliente VARCHAR)
     """
     if not cnpjs_str:
         return
@@ -397,8 +428,8 @@ def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', at
         raise RuntimeError('Configuração de banco não encontrada. Execute config.py ou defina DATABASE_URL.')
     
     # Executa SQL
-    q = "INSERT INTO clientes (cnpj, idcelular, token, validade, ativo) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (cnpj) DO UPDATE SET idcelular = EXCLUDED.idcelular, token = EXCLUDED.token, validade = EXCLUDED.validade, ativo = EXCLUDED.ativo;"
-    statements = [(q, (cnpjs_str, ids_str, token, validade, ativa))]
+    q = "INSERT INTO clientes (cnpj, idcelular, token, validade, ativo, nome_cliente) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (cnpj) DO UPDATE SET idcelular = EXCLUDED.idcelular, token = EXCLUDED.token, validade = EXCLUDED.validade, ativo = EXCLUDED.ativo, nome_cliente = EXCLUDED.nome_cliente;"
+    statements = [(q, (cnpjs_str, ids_str, token, validade, ativa, nome_cliente))]
     return _exec_db_statements(statements)
 
 

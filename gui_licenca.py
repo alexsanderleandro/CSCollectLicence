@@ -173,6 +173,7 @@ class LicencaWindow(QMainWindow):
         layout.addWidget(self.version_label)
 
         self.current_path = None
+        self.original_cnpjs_str = None  # Armazena a string original de CNPJs para detectar mudanças
 
     def add_cnpj(self):
         """Abre diálogo para inserir um CNPJ, normaliza (apenas dígitos) e adiciona à lista.
@@ -267,8 +268,11 @@ class LicencaWindow(QMainWindow):
             self.sql_banco_edit.setText(sql_banco)
 
         self.cnpj_list.clear()
-        for c in payload.get('cnpjs', []):
+        cnpjs_carregados = payload.get('cnpjs', [])
+        for c in cnpjs_carregados:
             self.cnpj_list.addItem(c)
+        # Armazena a string original de CNPJs para deletar registro antigo se modificar
+        self.original_cnpjs_str = ','.join(cnpjs_carregados) if cnpjs_carregados else None
         self.id_celular_list.clear()
         for ic in payload.get('ids_celular', []):
             self.id_celular_list.addItem(ic)
@@ -371,8 +375,20 @@ class LicencaWindow(QMainWindow):
             # em disco no arquivo `path` para distribuição/instalação.
             token = gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco)
             
+            # Obtém a database_url da configuração
+            database_url = None
+            if get_database_config:
+                db_config = get_database_config()
+                if db_config and db_config.get('type') == 'sql':
+                    database_url = db_config.get('url')
+            
             # Salva o token no arquivo de licença (formato JSON com metadata)
-            meta = {'cnpjs': cnpjs, 'ids_celular': ids_celular, 'validade': validade}
+            meta = {
+                'cnpjs': cnpjs,
+                'ids_celular': ids_celular,
+                'validade': validade,
+                'database_url': database_url
+            }
             salvar_licenca(token, path, payload_meta=meta)
             
             # Registra no banco de dados (se configurado)
@@ -381,7 +397,20 @@ class LicencaWindow(QMainWindow):
                 cnpjs_str = ','.join(cnpjs)
                 ids_str = ','.join(ids_celular)
                 ativa = self.ativa_cb.isChecked()
-                registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade, ativa)
+                
+                # Se a string de CNPJs mudou, deleta o registro antigo primeiro
+                if self.original_cnpjs_str and self.original_cnpjs_str != cnpjs_str:
+                    from licenca import deletar_registro_por_cnpjs
+                    try:
+                        deletar_registro_por_cnpjs(self.original_cnpjs_str)
+                    except Exception:
+                        pass  # Ignora erro ao deletar (pode não existir mais)
+                
+                registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade, ativa, nome_cliente)
+                
+                # Atualiza a string original para refletir o novo estado
+                self.original_cnpjs_str = cnpjs_str
+                
                 msg = f'Licença salva em: {path}\n\n✓ CNPJs registrados no banco com sucesso.'
             except Exception as e:
                 msg = f'Licença salva em: {path}\n\n⚠ Aviso: falha ao registrar no banco: {e}'
@@ -416,6 +445,7 @@ class LicencaWindow(QMainWindow):
         if getattr(self, 'sql_banco_edit', None):
             self.sql_banco_edit.setText('')
         self.current_path = None
+        self.original_cnpjs_str = None  # Reseta a string original
         QMessageBox.information(self, 'Novo', 'Criando nova licença — preencha os campos e clique em Salvar.')
 
 
