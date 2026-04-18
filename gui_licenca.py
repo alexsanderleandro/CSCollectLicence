@@ -23,7 +23,15 @@ from licenca import (
     gerar_licenca,
     salvar_licenca,
     carregar_licenca_de_arquivo,
+    registrar_tokens_por_cnpjs_single,
 )
+try:
+    from config import configure_database_interactive, get_database_config, get_config_path, load_config
+except ImportError:
+    configure_database_interactive = None
+    get_database_config = None
+    get_config_path = None
+    load_config = None
 from version import VERSION
 
 
@@ -132,6 +140,11 @@ class LicencaWindow(QMainWindow):
         hd2.addWidget(self.sem_validade_cb)
         layout.addLayout(hd2)
 
+        # checkbox para campo ativo do banco
+        self.ativa_cb = QCheckBox('Ativa (salvar como ativa no banco de dados)')
+        self.ativa_cb.setChecked(True)  # padrão: ativa
+        layout.addWidget(self.ativa_cb)
+
         # actions
         actions = QHBoxLayout()
         btn_new = QPushButton('Novo')
@@ -143,6 +156,12 @@ class LicencaWindow(QMainWindow):
         btn_save.clicked.connect(self.save_license)
         actions.addWidget(btn_load)
         actions.addWidget(btn_save)
+        
+        # Botão de configuração do banco
+        btn_config_db = QPushButton('⚙ Config. Banco')
+        btn_config_db.clicked.connect(self.configure_database)
+        actions.addWidget(btn_config_db)
+        
         layout.addLayout(actions)
 
         # mostrado quando carregado
@@ -170,6 +189,31 @@ class LicencaWindow(QMainWindow):
                     QMessageBox.information(self, 'Info', 'CNPJ já presente.')
                     return
                 self.cnpj_list.addItem(clean)
+
+    def configure_database(self):
+        """Abre diálogo para configurar a conexão com o banco de dados."""
+        if not get_database_config:
+            QMessageBox.warning(self, 'Erro', 'Módulo config.py não disponível.')
+            return
+        
+        # Mostra configuração atual
+        current = load_config() if load_config else {}
+        current_text = ''
+        if current.get('database_url'):
+            current_text = f'Configuração atual:\n{current["database_url"][:60]}...'
+        else:
+            current_text = 'Nenhuma configuração encontrada'
+        
+        # Solicita DATABASE_URL
+        url, ok = QInputDialog.getText(
+            self,
+            'Configurar Banco de Dados',
+            f'{current_text}\n\nCole a DATABASE_URL (connection string):\n(ex: postgresql://user:pass@host:5432/db)'
+        )
+        if ok and url:
+            from config import save_config
+            save_config({'database_url': url})
+            QMessageBox.information(self, 'Sucesso', f'Configuração salva em:\n{get_config_path()}')
 
     def remove_cnpj(self):
         """Remove o CNPJ selecionado na lista (se houver seleção)."""
@@ -326,10 +370,24 @@ class LicencaWindow(QMainWindow):
             # O token contém o payload JSON e a assinatura HMAC; o mesmo token é salvo
             # em disco no arquivo `path` para distribuição/instalação.
             token = gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco)
-            # Salva o token no arquivo de licença (por padrão: licenca.key)
-            salvar_licenca(token, path)
+            
+            # Salva o token no arquivo de licença (formato JSON com metadata)
+            meta = {'cnpjs': cnpjs, 'ids_celular': ids_celular, 'validade': validade}
+            salvar_licenca(token, path, payload_meta=meta)
+            
+            # Registra no banco de dados (se configurado)
+            try:
+                # Cria registro único com CNPJs e IDs separados por vírgula
+                cnpjs_str = ','.join(cnpjs)
+                ids_str = ','.join(ids_celular)
+                ativa = self.ativa_cb.isChecked()
+                registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade, ativa)
+                msg = f'Licença salva em: {path}\n\n✓ CNPJs registrados no banco com sucesso.'
+            except Exception as e:
+                msg = f'Licença salva em: {path}\n\n⚠ Aviso: falha ao registrar no banco: {e}'
+            
             self.current_path = path
-            QMessageBox.information(self, 'OK', f'Licença salva em: {path}')
+            QMessageBox.information(self, 'OK', msg)
         except Exception as e:
             QMessageBox.critical(self, 'Erro', f'Falha ao salvar: {e}')
 
@@ -349,6 +407,7 @@ class LicencaWindow(QMainWindow):
         self.sem_validade_cb.setChecked(False)
         self.validade.setEnabled(True)
         self.validade.setDate(QDate.currentDate())
+        self.ativa_cb.setChecked(True)  # padrão: ativa
         self.gerado_em_label.setText('')
         if getattr(self, 'nome_cliente_edit', None):
             self.nome_cliente_edit.setText('')

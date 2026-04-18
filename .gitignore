@@ -18,7 +18,9 @@ dist/
 
 # Logs and local files
 *.log
-licenca.key
+*.key
+cscollect_config.json
+test_*.key
 
 # Editor directories
 .vscode/

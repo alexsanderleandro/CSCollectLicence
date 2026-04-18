@@ -4,6 +4,17 @@ import base64
 import hmac
 import hashlib
 import secrets
+import copy
+import urllib.parse
+try:
+    import requests
+except Exception:
+    requests = None
+
+try:
+    from config import get_database_config
+except ImportError:
+    get_database_config = None
 from datetime import datetime, date, timezone
 
 
@@ -177,27 +188,345 @@ def verificar_licenca(token, validar_validade=True):
         raise
 
 
-def salvar_licenca(token, caminho="licenca.key"):
-    """Salva o token de licença no arquivo especificado.
+def salvar_licenca(token, caminho="licenca.key", payload_meta=None):
+    """Salva a licença no arquivo especificado.
+
+    Comportamentos:
+    - Se `payload_meta` for fornecido (dict), salva um JSON contendo
+      os campos recomendados do manager: `cnpjs`, `ids`, `token`, `validade`.
+    - Caso contrário, salva apenas a string do token (compatibilidade).
 
     Parâmetros:
     - token: string do token gerado por `gerar_licenca`.
-    - caminho: caminho do arquivo onde o token será gravado.
+    - caminho: caminho do arquivo onde será gravado.
+    - payload_meta: dict opcional com chaves semelhantes ao payload
+      (por exemplo: {'cnpjs': [...], 'ids_celular': [...], 'validade': 'YYYY-MM-DD'}).
     """
-    with open(caminho, "w", encoding='utf-8') as f:
-        f.write(token)
+    if payload_meta:
+        # Normaliza nomes: nosso payload usa `ids_celular`, mas o manager
+        # espera `ids` no JSON final.
+        out = {
+            "cnpjs": payload_meta.get("cnpjs") or payload_meta.get("cnpj") or [],
+            "ids": payload_meta.get("ids") or payload_meta.get("ids_celular") or [],
+            "token": token,
+            "validade": payload_meta.get("validade"),
+        }
+        # grava JSON legível (utf-8)
+        with open(caminho, "w", encoding='utf-8') as f:
+            json.dump(out, f, ensure_ascii=False, indent=2)
+    else:
+        with open(caminho, "w", encoding='utf-8') as f:
+            f.write(token)
 
 
 def carregar_licenca_de_arquivo(caminho="licenca.key"):
-    """Lê token de `caminho`, verifica e retorna o payload (dict)."""
+    """Lê token (ou JSON de manager) de `caminho`, verifica e retorna o payload (dict) e o token.
+
+    Suporta dois formatos de arquivo:
+    - Texto simples contendo o token.
+    - JSON contendo pelo menos a chave `token` (ex.: manager key).
+    """
     try:
         with open(caminho, "r", encoding='utf-8') as f:
-            token = f.read().strip()
+            conteudo = f.read().strip()
     except FileNotFoundError:
         raise FileNotFoundError(f"Arquivo não encontrado: {caminho}")
 
+    token = None
+    # tenta detectar JSON com campo `token`
+    if conteudo.startswith('{'):
+        try:
+            doc = json.loads(conteudo)
+            token = doc.get('token')
+        except Exception:
+            # não conseguiu parsear JSON — assume texto simples abaixo
+            token = None
+
+    if not token:
+        token = conteudo
+
     payload = verificar_licenca(token)
     return payload, token
+
+
+def _get_db_dsn_from_env():
+    """Constrói DSN a partir de variáveis de ambiente ou config JSON.
+
+    Aceita `DATABASE_URL` (preferencial) ou as variáveis NEON_HOST/NEON_DB/NEON_USER/NEON_PASSWORD/NEON_PORT.
+    Se não encontrar em env, tenta carregar do arquivo JSON local.
+    """
+    url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
+    if url:
+        return url
+
+    # Tenta carregar do JSON
+    if get_database_config:
+        db_config = get_database_config()
+        if db_config and db_config.get('type') == 'sql':
+            return db_config.get('url')
+
+    host = os.environ.get('NEON_HOST')
+    db = os.environ.get('NEON_DB') or os.environ.get('NEON_DATABASE')
+    user = os.environ.get('NEON_USER')
+    password = os.environ.get('NEON_PASSWORD')
+    port = os.environ.get('NEON_PORT') or os.environ.get('NEON_PORTA') or '5432'
+
+    if not (host and db and user and password):
+        return None
+
+    return f"host={host} port={port} dbname={db} user={user} password={password}"
+
+
+def _exec_db_statements(statements):
+    """Executa uma lista de (query, params) no banco Postgres (Neon).
+
+    Tenta usar `psycopg2` ou `psycopg` (v3). Lança erro explicativo se nenhum estiver instalado
+    ou se variáveis de conexão estiverem ausentes.
+    """
+    dsn = _get_db_dsn_from_env()
+    if not dsn:
+        raise RuntimeError('Credenciais do banco não encontradas nas variáveis de ambiente (DATABASE_URL ou NEON_*).')
+
+    # importa dinamicamente
+    db = None
+    try:
+        import psycopg2 as db
+        _psycopg_v3 = False
+    except Exception:
+        try:
+            import psycopg as db
+            _psycopg_v3 = True
+        except Exception:
+            raise RuntimeError('Instale psycopg2 ou psycopg para ativar registro no banco (pip install psycopg2-binary).')
+
+    conn = None
+    try:
+        if _psycopg_v3:
+            conn = db.connect(dsn)
+            with conn:
+                with conn.cursor() as cur:
+                    for q, p in statements:
+                        cur.execute(q, p)
+        else:
+            conn = db.connect(dsn)
+            conn.autocommit = False
+            cur = conn.cursor()
+            try:
+                for q, p in statements:
+                    cur.execute(q, p)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                cur.close()
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def registrar_tokens_por_cnpjs(cnpjs, token):
+    """Insere/atualiza o `token` para cada CNPJ na tabela `clientes`.
+
+    Usa INSERT ... ON CONFLICT (cnpj) DO UPDATE SET token = EXCLUDED.token;
+    Prioridade: env DATABASE_URL > env REST > JSON config
+    """
+    if not cnpjs:
+        return
+    
+    # Tenta obter configuração (env ou JSON)
+    db_config = None
+    if get_database_config:
+        db_config = get_database_config()
+    
+    # Fallback: tenta env direto se config.py não disponível
+    if not db_config:
+        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
+        rest_url = os.environ.get('NEON_REST_URL') or os.environ.get('NEON_REST_API_URL')
+        if db_url:
+            db_config = {'type': 'sql', 'url': db_url}
+        elif rest_url:
+            db_config = {'type': 'rest', 'url': rest_url, 'api_key': os.environ.get('NEON_API_KEY')}
+    
+    if not db_config:
+        raise RuntimeError('Configuração de banco não encontrada. Execute config.py ou defina DATABASE_URL.')
+    
+    # Executa conforme o tipo
+    if db_config['type'] == 'sql':
+        statements = []
+        q = "INSERT INTO clientes (cnpj, token, ativo) VALUES (%s, %s, true) ON CONFLICT (cnpj) DO UPDATE SET token = EXCLUDED.token;"
+        for c in cnpjs:
+            statements.append((q, (c, token)))
+        return _exec_db_statements(statements)
+    elif db_config['type'] == 'rest':
+        return _registrar_tokens_por_cnpjs_rest(db_config['url'], cnpjs, token, db_config.get('api_key'))
+    else:
+        raise RuntimeError('Tipo de configuração desconhecido.')
+
+
+def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', ativa=True):
+    """Insere/atualiza um ÚNICO registro na tabela `clientes` com CNPJs e IDs separados por vírgula.
+    
+    Parâmetros:
+    - cnpjs_str: string com CNPJs separados por vírgula (ex: "12345678000199,98765432000188")
+    - ids_str: string com IDs de celular separados por vírgula
+    - token: token assinado
+    - validade: data de validade (YYYY-MM-DD) ou string vazia para sem validade
+    - ativa: boolean indicando se a licença está ativa (padrão: True)
+    
+    Tabela esperada: clientes (cnpj VARCHAR PRIMARY KEY, idcelular TEXT, token TEXT, validade VARCHAR, ativo BOOLEAN)
+    """
+    if not cnpjs_str:
+        return
+    
+    # Tenta obter configuração (env ou JSON)
+    db_config = None
+    if get_database_config:
+        db_config = get_database_config()
+    
+    # Fallback: tenta env direto
+    if not db_config:
+        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
+        if db_url:
+            db_config = {'type': 'sql', 'url': db_url}
+    
+    if not db_config:
+        raise RuntimeError('Configuração de banco não encontrada. Execute config.py ou defina DATABASE_URL.')
+    
+    # Executa SQL
+    q = "INSERT INTO clientes (cnpj, idcelular, token, validade, ativo) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (cnpj) DO UPDATE SET idcelular = EXCLUDED.idcelular, token = EXCLUDED.token, validade = EXCLUDED.validade, ativo = EXCLUDED.ativo;"
+    statements = [(q, (cnpjs_str, ids_str, token, validade, ativa))]
+    return _exec_db_statements(statements)
+
+
+def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade='', api_key=None):
+    """Registra via REST um único registro com CNPJs e IDs separados por vírgula."""
+    if requests is None:
+        raise RuntimeError('Biblioteca requests não está disponível. Instale com pip install requests')
+
+    if not api_key:
+        api_key = os.environ.get('NEON_API_KEY')
+    if not api_key:
+        raise RuntimeError('NEON_API_KEY não definido. Configure em config.py ou variável de ambiente.')
+    
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {api_key}',
+        'Prefer': 'resolution=merge-duplicates'
+    }
+
+    url = base_url.rstrip('/') + '/clientes'
+    payload = {
+        'cnpj': cnpjs_str,
+        'idcelular': ids_str,
+        'token': token,
+        'validade': validade if validade else None,
+        'ativo': True
+    }
+    
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)
+        if not resp.ok:
+            raise RuntimeError(f'Erro REST ({resp.status_code}): {resp.text}')
+        return resp.json() if resp.text else None
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f'Falha na conexão REST: {e}')
+
+
+def _registrar_tokens_por_cnpjs_rest(base_url, cnpjs, token, api_key=None):
+    """Usa o endpoint REST do Neon/PostgREST para inserir/upsert em lote.
+
+    Exige `api_key` (JWT service_role recomendado) passado como parâmetro ou em env.
+    """
+    if requests is None:
+        raise RuntimeError('Biblioteca requests não está disponível. Instale com pip install requests')
+
+    if not api_key:
+        api_key = os.environ.get('NEON_API_KEY')
+    if not api_key:
+        raise RuntimeError('NEON_API_KEY não definido. Configure em config.py ou variável de ambiente.')
+    
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {api_key}',
+        'Prefer': 'resolution=merge-duplicates'
+    }
+
+    url = base_url.rstrip('/') + '/clientes'
+    payload = [{'cnpj': c, 'token': token, 'ativo': True} for c in cnpjs]
+    
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)
+        if not resp.ok:
+            raise RuntimeError(f'Erro REST ({resp.status_code}): {resp.text}')
+        return resp.json() if resp.text else None
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f'Falha na conexão REST: {e}')
+
+
+def remover_cnpjs_do_db(cnpjs):
+    """Remove registros dos CNPJs informados da tabela `clientes`."""
+    if not cnpjs:
+        return
+    
+    # Tenta obter configuração (env ou JSON)
+    db_config = None
+    if get_database_config:
+        db_config = get_database_config()
+    
+    # Fallback: tenta env direto
+    if not db_config:
+        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
+        rest_url = os.environ.get('NEON_REST_URL') or os.environ.get('NEON_REST_API_URL')
+        if db_url:
+            db_config = {'type': 'sql', 'url': db_url}
+        elif rest_url:
+            db_config = {'type': 'rest', 'url': rest_url, 'api_key': os.environ.get('NEON_API_KEY')}
+    
+    if not db_config:
+        raise RuntimeError('Configuração de banco não encontrada. Execute config.py ou defina DATABASE_URL.')
+    
+    if db_config['type'] == 'sql':
+        statements = []
+        q = "DELETE FROM clientes WHERE cnpj = %s;"
+        for c in cnpjs:
+            statements.append((q, (c,)))
+        return _exec_db_statements(statements)
+    elif db_config['type'] == 'rest':
+        return _remover_cnpjs_do_db_rest(db_config['url'], cnpjs, db_config.get('api_key'))
+    else:
+        raise RuntimeError('Tipo de configuração desconhecido.')
+
+
+def _remover_cnpjs_do_db_rest(base_url, cnpjs, api_key=None):
+    if requests is None:
+        raise RuntimeError('Biblioteca requests não está disponível. Instale com pip install requests')
+
+    if not api_key:
+        api_key = os.environ.get('NEON_API_KEY')
+    if not api_key:
+        raise RuntimeError('NEON_API_KEY não definido. Configure em config.py ou variável de ambiente.')
+    
+    headers = {
+        'Authorization': f'Bearer {api_key}'
+    }
+
+    # usa operador in. (PostgREST) para deletar em lote
+    # construir lista URL-encoded: in.("c1","c2")
+    quoted_cnpjs = ','.join(f'"{c}"' for c in cnpjs)
+    filter_part = f"cnpj=in.({quoted_cnpjs})"
+    url = base_url.rstrip('/') + f"/clientes?{filter_part}"
+    
+    try:
+        resp = requests.delete(url, headers=headers, timeout=30)
+        if not resp.ok:
+            raise RuntimeError(f'Erro REST DELETE ({resp.status_code}): {resp.text}')
+        return resp.json() if resp.text else None
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f'Falha na conexão REST: {e}')
 
 
 def _input_cnpjs_inicial():
@@ -284,6 +613,8 @@ if __name__ == "__main__":
             except Exception as e:
                 print('Erro ao carregar licença:', e)
                 raise SystemExit(1)
+            # manter cópia original antes da edição para detectar remoções
+            original_payload = copy.deepcopy(payload)
             # permitir edição
             payload = _menu_edicao(payload)
             # regenerar token
@@ -295,7 +626,25 @@ if __name__ == "__main__":
                 payload.get('sql_servidor', ''),
                 payload.get('sql_banco', ''),
             )
-            salvar_licenca(novo_token, caminho)
+
+            # registrar/upsert no banco para CNPJs atuais
+            try:
+                registrar_tokens_por_cnpjs(payload.get('cnpjs', []), novo_token)
+                print('✓ CNPJs registrados no banco com sucesso.')
+            except Exception as e:
+                print(f'⚠ Aviso: falha ao registrar token no banco: {e}')
+
+            # remover CNPJs que foram removidos da licença
+            try:
+                orig = original_payload.get('cnpjs', [])
+                removed = [c for c in orig if c not in payload.get('cnpjs', [])]
+                if removed:
+                    remover_cnpjs_do_db(removed)
+                    print(f'✓ {len(removed)} CNPJ(s) removido(s) do banco.')
+            except Exception as e:
+                print(f'⚠ Aviso: falha ao remover CNPJs no banco: {e}')
+
+            salvar_licenca(novo_token, caminho, payload_meta=payload)
             print('Licença atualizada e salva em', caminho)
         else:
             cnpjs = _input_cnpjs_inicial()
@@ -350,7 +699,20 @@ if __name__ == "__main__":
                 safe = 'cliente'
             default_name = f"Licenca_CSCollectManager_{safe}.key"
             caminho = input(f"Salvar em (padrão '{default_name}'): ").strip() or default_name
-            salvar_licenca(token, caminho)
+            # salva também metadados no formato recomendado para o manager
+            meta = {
+                'cnpjs': cnpjs,
+                'ids_celular': ids_celular,
+                'validade': validade,
+            }
+            # salva arquivo e tenta registrar no banco
+            try:
+                registrar_tokens_por_cnpjs(cnpjs, token)
+                print('✓ CNPJs registrados no banco com sucesso.')
+            except Exception as e:
+                print(f'⚠ Aviso: falha ao registrar token no banco: {e}')
+
+            salvar_licenca(token, caminho, payload_meta=meta)
             print('Licença gerada e salva em', caminho)
     except KeyboardInterrupt:
         print('\nOperação cancelada.')

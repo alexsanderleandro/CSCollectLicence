@@ -15,6 +15,46 @@ python -m venv venv
 python -m pip install -r requirements.txt
 ```
 
+Adicionalmente, se for usar integração com o Neon/Postgres (registro de tokens), instale `psycopg[binary]` (já incluido no `requirements.txt`) ou, manualmente:
+
+```powershell
+python -m pip install "psycopg[binary]"
+```
+
+**Configuração recomendada** (sem variáveis de ambiente):
+
+Execute o script de configuração para salvar as credenciais localmente:
+
+```powershell
+python .\configurar_banco.py
+```
+
+Isso criará `cscollect_config.json` na pasta do projeto/executável com suas credenciais.
+
+**Configuração via variáveis de ambiente** (alternativa):
+
+Defina as variáveis de ambiente para conexão com o banco (uma das opções):
+
+- `DATABASE_URL` com a URL completa (recomendada, ex: `postgres://user:pass@host:5432/dbname`)
+OU
+- `NEON_HOST`, `NEON_DB` (ou `NEON_DATABASE`), `NEON_USER`, `NEON_PASSWORD`, `NEON_PORT`
+
+Ou, para integração via API REST do Neon/PostgREST, defina:
+
+- `NEON_REST_URL` — ex: https://ep-dry-hall-acd532yy.apirest.sa-east-1.aws.neon.tech/neondb/rest/v1
+- `NEON_API_KEY` — a chave (service role ou anon, conforme permissões) a usar nos headers
+
+Exemplo PowerShell de definição temporária (não recomendado para produção):
+
+```powershell
+$env:NEON_REST_URL='https://ep-dry-hall-acd532yy.apirest.sa-east-1.aws.neon.tech/neondb/rest/v1'
+$env:NEON_API_KEY='SUA_CHAVE_DE_API'
+$env:MASTER_KEY='SUA_MASTER_KEY_SECRETA'
+python .\licenca.py
+```
+
+Se preferir usar `DATABASE_URL`, certifique-se de que contém usuário e senha URL-encoded quando necessário.
+
 3. Crie um arquivo `.env` a partir de `.env.example` e defina sua chave mestra:
 
 ```text
@@ -22,7 +62,19 @@ COPY .env.example .env
 # Edite .env e substitua MASTER_KEY
 ```
 
-4. Execute o script:
+4. **Configure a conexão com o banco de dados** (uma vez):
+
+```powershell
+python .\configurar_banco.py
+```
+
+Escolha entre:
+- **SQL Direto**: Cole a `DATABASE_URL` completa do Neon
+- **API REST**: Cole a URL REST + API Key (JWT service_role)
+
+A configuração será salva em `cscollect_config.json` na mesma pasta.
+
+5. Execute o script:
 
 ```powershell
 python .\licenca.py
