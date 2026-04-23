@@ -74,6 +74,74 @@ Escolha entre:
 
 A configuração será salva em `cscollect_config.json` na mesma pasta.
 
+Mudanças de Schema (Neon)
+-------------------------
+
+O projeto inclui migrations para ajustar o schema do banco Neon conforme necessário.
+Arquivos de migration disponíveis:
+
+- `migration.sql` — adiciona colunas `reginclusao` e `dataalteracao` e cria trigger `set_dataalteracao`.
+- `migration_neon_schema.sql` — cria/ajusta tabelas `clientes` e `cargas` e cria a tabela `contagens`.
+- `migration_neon_schema_v2.sql` — adiciona `idcelular` e `cnpj` em `clientes`, `cargas` e `contagens` e cria índices únicos compostos (`id, cnpj, idcelular`).
+- `migration_neon_schema_v3.sql` — adiciona coluna `validade` do tipo `date` em `clientes`.
+
+Resumo do schema esperado (após aplicar as migrations):
+
+- `clientes`:
+	- `id` (serial) — identificador
+	- `nome_cliente` (text)
+	- `cnpj` (text)
+	- `token` (text) — token assinado (payload.signature)
+	- `idcelular` (text)
+	- `reginclusao` (timestamptz) — timestamp de criação (DEFAULT now())
+	- `dataalteracao` (timestamptz) — atualizado por trigger antes de UPDATE
+	- `validade` (date)
+
+- `cargas`:
+	- `id` (serial)
+	- `cliente_id` (integer)
+	- `nome_arquivo` (text)
+	- `data_envio` (timestamptz)
+	- `nome_cliente` (text)
+	- `cnpj` (text)
+	- `idcelular` (text)
+
+- `contagens` (nova tabela):
+	- `id` (serial)
+	- `cliente_id` (integer)
+	- `nome_arquivo` (text)
+	- `data_envio` (timestamptz)
+	- `nome_cliente` (text)
+	- `cnpj` (text)
+	- `idcelular` (text)
+
+Observações:
+- As migrations criam índices únicos compostos `(id, cnpj, idcelular)` como preparação para uma possível PK composta no futuro.
+- A trigger `set_dataalteracao` garante que `dataalteracao` seja atualizada automaticamente ao executar UPDATEs.
+- `token` armazenado em `clientes.token` tem o formato `payload.signature` (base64url(payload).base64url(signature)).
+
+Como aplicar as migrations
+-------------------------
+
+Use o script `apply_migration.py` (recomendado) dentro do `venv` ou `psql` diretamente. Exemplo com o `venv`:
+
+```powershell
+$env:DATABASE_URL='postgresql://USUARIO:SENHA@HOST/DB?sslmode=require&channel_binding=require'
+.\venv\Scripts\python.exe .\apply_migration.py "%DATABASE_URL%" migration_neon_schema.sql
+.\venv\Scripts\python.exe .\apply_migration.py "%DATABASE_URL%" migration_neon_schema_v2.sql
+.\venv\Scripts\python.exe .\apply_migration.py "%DATABASE_URL%" migration_neon_schema_v3.sql
+```
+
+Ou com `psql`:
+
+```powershell
+psql 'postgresql://USUARIO:SENHA@HOST/DB?sslmode=require&channel_binding=require' -f migration_neon_schema.sql
+psql 'postgresql://USUARIO:SENHA@HOST/DB?sslmode=require&channel_binding=require' -f migration_neon_schema_v2.sql
+psql 'postgresql://USUARIO:SENHA@HOST/DB?sslmode=require&channel_binding=require' -f migration_neon_schema_v3.sql
+```
+
+Após aplicar, verifique as colunas e a existência da trigger conforme descrito no README.
+
 5. Execute o script:
 
 ```powershell

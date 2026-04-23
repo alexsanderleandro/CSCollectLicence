@@ -66,6 +66,25 @@ def _b64u_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode((s + padding).encode('ascii'))
 
 
+def _ensure_token_complete(token: str) -> str:
+    """Garante que o `token` contém payload + '.' + signature.
+
+    Se `token` já contém um ponto ('.') é retornado sem alterações.
+    Se parece ser apenas o payload (base64url do JSON), tenta decodificar
+    e calcular a assinatura HMAC-SHA256 usando `MASTER_KEY_BYTES`, anexando
+    a parte de assinatura codificada em base64url.
+    Em caso de falha na decodificação, retorna o token original.
+    """
+    if not token or '.' in token:
+        return token
+    try:
+        dados = _b64u_decode(token)
+    except Exception:
+        return token
+    assinatura = hmac.new(MASTER_KEY_BYTES, dados, hashlib.sha256).digest()
+    return f"{token}.{_b64u_encode(assinatura)}"
+
+
 def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco):
     """Gera um token de licença.
 
@@ -355,10 +374,17 @@ def registrar_tokens_por_cnpjs(cnpjs, token):
     if not db_config:
         raise RuntimeError('Configuração de banco não encontrada. Execute config.py ou defina DATABASE_URL.')
     
+    # garante que o token contém assinatura (payload.signature)
+    token = _ensure_token_complete(token)
+
     # Executa conforme o tipo
     if db_config['type'] == 'sql':
         statements = []
-        q = "INSERT INTO clientes (cnpj, token, ativo) VALUES (%s, %s, true) ON CONFLICT (cnpj) DO UPDATE SET token = EXCLUDED.token;"
+        q = (
+            "INSERT INTO clientes (cnpj, token, ativo, reginclusao, dataalteracao) "
+            "VALUES (%s, %s, true, now(), now()) "
+            "ON CONFLICT (cnpj) DO UPDATE SET token = EXCLUDED.token, dataalteracao = now();"
+        )
         for c in cnpjs:
             statements.append((q, (c, token)))
         return _exec_db_statements(statements)
@@ -427,9 +453,18 @@ def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', at
     if not db_config:
         raise RuntimeError('Configuração de banco não encontrada. Execute config.py ou defina DATABASE_URL.')
     
+    # garante que o token contém assinatura (payload.signature)
+    token = _ensure_token_complete(token)
+
     # Executa SQL
-    q = "INSERT INTO clientes (cnpj, idcelular, token, validade, ativo, nome_cliente) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (cnpj) DO UPDATE SET idcelular = EXCLUDED.idcelular, token = EXCLUDED.token, validade = EXCLUDED.validade, ativo = EXCLUDED.ativo, nome_cliente = EXCLUDED.nome_cliente;"
-    statements = [(q, (cnpjs_str, ids_str, token, validade, ativa, nome_cliente))]
+    q = (
+        "INSERT INTO clientes (cnpj, idcelular, token, validade, ativo, nome_cliente, reginclusao, dataalteracao) "
+        "VALUES (%s, %s, %s, %s, %s, %s, now(), now()) "
+        "ON CONFLICT (cnpj) DO UPDATE SET idcelular = EXCLUDED.idcelular, token = EXCLUDED.token, validade = EXCLUDED.validade, ativo = EXCLUDED.ativo, nome_cliente = EXCLUDED.nome_cliente, dataalteracao = now();"
+    )
+    # converte string vazia de validade para NULL para colunas do tipo DATE
+    validade_param = validade if validade else None
+    statements = [(q, (cnpjs_str, ids_str, token, validade_param, ativa, nome_cliente))]
     return _exec_db_statements(statements)
 
 
@@ -450,12 +485,16 @@ def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade=
     }
 
     url = base_url.rstrip('/') + '/clientes'
+    token = _ensure_token_complete(token)
+    now_iso = datetime.now(timezone.utc).isoformat()
     payload = {
         'cnpj': cnpjs_str,
         'idcelular': ids_str,
         'token': token,
         'validade': validade if validade else None,
-        'ativo': True
+        'ativo': True,
+        'reginclusao': now_iso,
+        'dataalteracao': now_iso,
     }
     
     try:
@@ -487,7 +526,9 @@ def _registrar_tokens_por_cnpjs_rest(base_url, cnpjs, token, api_key=None):
     }
 
     url = base_url.rstrip('/') + '/clientes'
-    payload = [{'cnpj': c, 'token': token, 'ativo': True} for c in cnpjs]
+    token = _ensure_token_complete(token)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payload = [{'cnpj': c, 'token': token, 'ativo': True, 'reginclusao': now_iso, 'dataalteracao': now_iso} for c in cnpjs]
     
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=30)
