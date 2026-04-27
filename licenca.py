@@ -221,6 +221,9 @@ def salvar_licenca(token, caminho="licenca.key", payload_meta=None):
     - payload_meta: dict opcional com chaves semelhantes ao payload
       (por exemplo: {'cnpjs': [...], 'ids_celular': [...], 'validade': 'YYYY-MM-DD', 'database_url': '...'}).
     """
+    # garante que o token salvo no arquivo contém payload + assinatura
+    token = _ensure_token_complete(token)
+
     if payload_meta:
         # Normaliza nomes: nosso payload usa `ids_celular`, mas o manager
         # espera `ids` no JSON final.
@@ -231,11 +234,11 @@ def salvar_licenca(token, caminho="licenca.key", payload_meta=None):
             "validade": payload_meta.get("validade"),
             "database_url": payload_meta.get("database_url"),
         }
-        # grava JSON legível (utf-8)
-        with open(caminho, "w", encoding='utf-8') as f:
+        # grava JSON legível (cp1252/latin-1 para compatibilidade com caracteres como ô)
+        with open(caminho, "w", encoding='cp1252') as f:
             json.dump(out, f, ensure_ascii=False, indent=2)
     else:
-        with open(caminho, "w", encoding='utf-8') as f:
+        with open(caminho, "w", encoding='cp1252') as f:
             f.write(token)
 
 
@@ -247,7 +250,7 @@ def carregar_licenca_de_arquivo(caminho="licenca.key"):
     - JSON contendo pelo menos a chave `token` (ex.: manager key).
     """
     try:
-        with open(caminho, "r", encoding='utf-8') as f:
+        with open(caminho, "r", encoding='cp1252') as f:
             conteudo = f.read().strip()
     except FileNotFoundError:
         raise FileNotFoundError(f"Arquivo não encontrado: {caminho}")
