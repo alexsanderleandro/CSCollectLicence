@@ -20,7 +20,6 @@ from PySide6.QtGui import QIcon
 from PySide6.QtCore import QDate
 
 from licenca import (
-    gerar_licenca,
     salvar_licenca,
     carregar_licenca_de_arquivo,
     registrar_tokens_por_cnpjs_single,
@@ -144,6 +143,12 @@ class LicencaWindow(QMainWindow):
         self.ativa_cb = QCheckBox('Ativa (salvar como ativa no banco de dados)')
         self.ativa_cb.setChecked(True)  # padrão: ativa
         layout.addWidget(self.ativa_cb)
+
+        # Token (fixo, informado pelo usuário)
+        layout.addWidget(QLabel('Token da licença (fixo, informe o valor):'))
+        self.token_edit = QLineEdit()
+        self.token_edit.setPlaceholderText('Cole aqui o token fixo da licença')
+        layout.addWidget(self.token_edit)
 
         # actions
         actions = QHBoxLayout()
@@ -298,6 +303,9 @@ class LicencaWindow(QMainWindow):
             self.gerado_em_label.setText(f'Gerado em: {ge}')
         else:
             self.gerado_em_label.setText('')
+        # popula o campo de token com o token carregado do arquivo
+        if getattr(self, 'token_edit', None):
+            self.token_edit.setText(token)
         self.current_path = path
         QMessageBox.information(self, 'OK', 'Licença carregada com sucesso.')
 
@@ -370,10 +378,13 @@ class LicencaWindow(QMainWindow):
                 return
 
         try:
-            # Gera o token (string assinada) a partir de todos os CNPJs e IDs de celular.
-            # O token contém o payload JSON e a assinatura HMAC; o mesmo token é salvo
-            # em disco no arquivo `path` para distribuição/instalação.
-            token = gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco)
+            # Usa o token fixo informado pelo usuário no campo de texto.
+            token = ''
+            if getattr(self, 'token_edit', None):
+                token = self.token_edit.text().strip()
+            if not token:
+                QMessageBox.warning(self, 'Atenção', 'É obrigatório informar o token da licença.')
+                return
             
             # Obtém a database_url da configuração
             database_url = None
@@ -444,6 +455,8 @@ class LicencaWindow(QMainWindow):
             self.sql_servidor_edit.setText('')
         if getattr(self, 'sql_banco_edit', None):
             self.sql_banco_edit.setText('')
+        if getattr(self, 'token_edit', None):
+            self.token_edit.setText('')
         self.current_path = None
         self.original_cnpjs_str = None  # Reseta a string original
         QMessageBox.information(self, 'Novo', 'Criando nova licença — preencha os campos e clique em Salvar.')
