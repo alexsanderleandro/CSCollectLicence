@@ -398,7 +398,10 @@ class LicencaWindow(QMainWindow):
                 'cnpjs': cnpjs,
                 'ids_celular': ids_celular,
                 'validade': validade,
-                'database_url': database_url
+                'database_url': database_url,
+                'nome_cliente': nome_cliente,
+                'sql_servidor': sql_servidor,
+                'sql_banco': sql_banco,
             }
             salvar_licenca(token, path, payload_meta=meta)
             
@@ -417,7 +420,7 @@ class LicencaWindow(QMainWindow):
                     except Exception:
                         pass  # Ignora erro ao deletar (pode não existir mais)
                 
-                registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade, ativa, nome_cliente)
+                registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade, ativa, nome_cliente, sql_servidor, sql_banco)
                 
                 # Atualiza a string original para refletir o novo estado
                 self.original_cnpjs_str = cnpjs_str

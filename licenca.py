@@ -233,6 +233,9 @@ def salvar_licenca(token, caminho="licenca.key", payload_meta=None):
             "token": token,
             "validade": payload_meta.get("validade"),
             "database_url": payload_meta.get("database_url"),
+            "nome_cliente": payload_meta.get("nome_cliente") or "",
+            "sql_servidor": payload_meta.get("sql_servidor") or "",
+            "sql_banco": payload_meta.get("sql_banco") or "",
         }
         # grava JSON legível (cp1252/latin-1 para compatibilidade com caracteres como ô)
         with open(caminho, "w", encoding='cp1252') as f:
@@ -250,20 +253,71 @@ def carregar_licenca_de_arquivo(caminho="licenca.key"):
     - JSON contendo pelo menos a chave `token` (ex.: manager key).
     """
     try:
-        with open(caminho, "r", encoding='cp1252') as f:
-            conteudo = f.read().strip()
+        raw = open(caminho, "rb").read()
     except FileNotFoundError:
         raise FileNotFoundError(f"Arquivo não encontrado: {caminho}")
 
+    # Remove BOM UTF-8 se presente
+    if raw.startswith(b'\xef\xbb\xbf'):
+        raw = raw[3:]
+
+    # Tenta decodificar: UTF-8 → cp1252 → latin-1 (fallback universal)
+    for enc in ('utf-8', 'cp1252', 'latin-1'):
+        try:
+            conteudo = raw.decode(enc).strip()
+            break
+        except UnicodeDecodeError:
+            continue
+
     token = None
+    payload = None
     # tenta detectar JSON com campo `token`
     if conteudo.startswith('{'):
         try:
             doc = json.loads(conteudo)
             token = doc.get('token')
+            # Monta payload a partir dos campos do JSON (formato CSCollect Manager)
+            # IDs podem vir como 'ids' ou 'ids_celular'
+            ids = doc.get('ids_celular') or doc.get('ids') or []
+            cnpjs = doc.get('cnpjs') or []
+            if cnpjs or ids:
+                payload = {
+                    'cnpjs': cnpjs,
+                    'ids_celular': ids,
+                    'validade': doc.get('validade', ''),
+                    'nome_cliente': doc.get('nome_cliente', ''),
+                    'sql_servidor': doc.get('sql_servidor', ''),
+                    'sql_banco': doc.get('sql_banco', ''),
+                    'database_url': doc.get('database_url', ''),
+                }
         except Exception:
-            # não conseguiu parsear JSON — assume texto simples abaixo
             token = None
+
+    # Se já temos o payload do JSON envelope, tenta validar o token mas não bloqueia se falhar
+    if payload is not None:
+        if token:
+            try:
+                payload_verificado = verificar_licenca(token)
+                # Mescla campos extras que só existem no payload assinado
+                # (prioridade: valor existente no envelope > valor do token)
+                for k, v in payload_verificado.items():
+                    if not payload.get(k):
+                        payload[k] = v
+            except Exception:
+                # Token em formato externo (ex: CSCollect Manager) — tenta decodificar
+                # o payload da primeira parte do token sem verificar assinatura
+                try:
+                    parte_payload = token.split('.')[0]
+                    import base64 as _b64
+                    padding = '=' * (-len(parte_payload) % 4)
+                    raw_payload = _b64.urlsafe_b64decode((parte_payload + padding).encode('ascii'))
+                    doc_token = json.loads(raw_payload.decode('utf-8'))
+                    for k in ('nome_cliente', 'sql_servidor', 'sql_banco', 'validade', 'cnpjs', 'ids_celular'):
+                        if not payload.get(k) and doc_token.get(k):
+                            payload[k] = doc_token[k]
+                except Exception:
+                    pass
+        return payload, token or ''
 
     if not token:
         token = conteudo
@@ -426,7 +480,7 @@ def deletar_registro_por_cnpjs(cnpjs_str):
     return _exec_db_statements(statements)
 
 
-def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', ativa=True, nome_cliente=''):
+def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', ativa=True, nome_cliente='', sql_servidor='', sql_banco=''):
     """Insere/atualiza um ÚNICO registro na tabela `clientes` com CNPJs e IDs separados por vírgula.
     
     Parâmetros:
@@ -436,8 +490,10 @@ def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', at
     - validade: data de validade (YYYY-MM-DD) ou string vazia para sem validade
     - ativa: boolean indicando se a licença está ativa (padrão: True)
     - nome_cliente: nome do cliente vinculado à licença (máx 30 caracteres)
+    - sql_servidor: nome do servidor SQL (máx 30 caracteres)
+    - sql_banco: nome do banco de dados (máx 30 caracteres)
     
-    Tabela esperada: clientes (cnpj VARCHAR PRIMARY KEY, idcelular TEXT, token TEXT, validade VARCHAR, ativo BOOLEAN, nome_cliente VARCHAR)
+    Tabela esperada: clientes (cnpj VARCHAR PRIMARY KEY, idcelular TEXT, token TEXT, validade VARCHAR, ativo BOOLEAN, nome_cliente VARCHAR, sql_servidor VARCHAR, sql_banco VARCHAR)
     """
     if not cnpjs_str:
         return
@@ -460,18 +516,24 @@ def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', at
     token = _ensure_token_complete(token)
 
     # Executa SQL
+    if db_config['type'] == 'rest':
+        return _registrar_tokens_single_rest(
+            db_config['url'], cnpjs_str, ids_str, token, validade,
+            api_key=db_config.get('api_key'),
+            nome_cliente=nome_cliente, sql_servidor=sql_servidor, sql_banco=sql_banco
+        )
     q = (
-        "INSERT INTO clientes (cnpj, idcelular, token, validade, ativo, nome_cliente, reginclusao, dataalteracao) "
-        "VALUES (%s, %s, %s, %s, %s, %s, now(), now()) "
-        "ON CONFLICT (cnpj) DO UPDATE SET idcelular = EXCLUDED.idcelular, token = EXCLUDED.token, validade = EXCLUDED.validade, ativo = EXCLUDED.ativo, nome_cliente = EXCLUDED.nome_cliente, dataalteracao = now();"
+        "INSERT INTO clientes (cnpj, idcelular, token, validade, ativo, nome_cliente, sql_servidor, sql_banco, reginclusao, dataalteracao) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now(), now()) "
+        "ON CONFLICT (cnpj) DO UPDATE SET idcelular = EXCLUDED.idcelular, token = EXCLUDED.token, validade = EXCLUDED.validade, ativo = EXCLUDED.ativo, nome_cliente = EXCLUDED.nome_cliente, sql_servidor = EXCLUDED.sql_servidor, sql_banco = EXCLUDED.sql_banco, dataalteracao = now();"
     )
     # converte string vazia de validade para NULL para colunas do tipo DATE
     validade_param = validade if validade else None
-    statements = [(q, (cnpjs_str, ids_str, token, validade_param, ativa, nome_cliente))]
+    statements = [(q, (cnpjs_str, ids_str, token, validade_param, ativa, nome_cliente, sql_servidor or None, sql_banco or None))]
     return _exec_db_statements(statements)
 
 
-def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade='', api_key=None):
+def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade='', api_key=None, nome_cliente='', sql_servidor='', sql_banco=''):
     """Registra via REST um único registro com CNPJs e IDs separados por vírgula."""
     if requests is None:
         raise RuntimeError('Biblioteca requests não está disponível. Instale com pip install requests')
@@ -496,6 +558,9 @@ def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade=
         'token': token,
         'validade': validade if validade else None,
         'ativo': True,
+        'nome_cliente': nome_cliente or None,
+        'sql_servidor': sql_servidor or None,
+        'sql_banco': sql_banco or None,
         'reginclusao': now_iso,
         'dataalteracao': now_iso,
     }
