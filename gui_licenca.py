@@ -15,6 +15,9 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QInputDialog,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
 )
 from PySide6.QtGui import QIcon
 from PySide6.QtCore import QDate
@@ -25,12 +28,14 @@ from licenca import (
     registrar_tokens_por_cnpjs_single,
 )
 try:
-    from config import configure_database_interactive, get_database_config, get_config_path, load_config
+    from config import configure_database_interactive, get_database_config, get_config_path, load_config, get_api_config, save_api_config
 except ImportError:
     configure_database_interactive = None
     get_database_config = None
     get_config_path = None
     load_config = None
+    get_api_config = None
+    save_api_config = None
 from version import VERSION
 
 
@@ -144,12 +149,6 @@ class LicencaWindow(QMainWindow):
         self.ativa_cb.setChecked(True)  # padrão: ativa
         layout.addWidget(self.ativa_cb)
 
-        # Token (fixo, informado pelo usuário)
-        layout.addWidget(QLabel('Token da licença (fixo, informe o valor):'))
-        self.token_edit = QLineEdit()
-        self.token_edit.setPlaceholderText('Cole aqui o token fixo da licença')
-        layout.addWidget(self.token_edit)
-
         # actions
         actions = QHBoxLayout()
         btn_new = QPushButton('Novo')
@@ -162,9 +161,9 @@ class LicencaWindow(QMainWindow):
         actions.addWidget(btn_load)
         actions.addWidget(btn_save)
         
-        # Botão de configuração do banco
-        btn_config_db = QPushButton('⚙ Config. Banco')
-        btn_config_db.clicked.connect(self.configure_database)
+        # Botão de configuração da API
+        btn_config_db = QPushButton('⚙ Config API')
+        btn_config_db.clicked.connect(self.configure_api)
         actions.addWidget(btn_config_db)
         
         layout.addLayout(actions)
@@ -196,30 +195,56 @@ class LicencaWindow(QMainWindow):
                     return
                 self.cnpj_list.addItem(clean)
 
-    def configure_database(self):
-        """Abre diálogo para configurar a conexão com o banco de dados."""
-        if not get_database_config:
+    def configure_api(self):
+        """Abre diálogo para configurar a URL da API, token de autorização e URL do banco."""
+        if not get_api_config:
             QMessageBox.warning(self, 'Erro', 'Módulo config.py não disponível.')
             return
-        
-        # Mostra configuração atual
-        current = load_config() if load_config else {}
-        current_text = ''
-        if current.get('database_url'):
-            current_text = f'Configuração atual:\n{current["database_url"][:60]}...'
-        else:
-            current_text = 'Nenhuma configuração encontrada'
-        
-        # Solicita DATABASE_URL
-        url, ok = QInputDialog.getText(
-            self,
-            'Configurar Banco de Dados',
-            f'{current_text}\n\nCole a DATABASE_URL (connection string):\n(ex: postgresql://user:pass@host:5432/db)'
-        )
-        if ok and url:
-            from config import save_config
-            save_config({'database_url': url})
-            QMessageBox.information(self, 'Sucesso', f'Configuração salva em:\n{get_config_path()}')
+
+        current = get_api_config()
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Configuração da API')
+        dlg.setMinimumWidth(500)
+
+        form = QFormLayout()
+
+        api_url_edit = QLineEdit()
+        api_url_edit.setText(current.get('api_url', ''))
+        api_url_edit.setPlaceholderText('https://api.exemplo.com')
+        form.addRow('URL da API:', api_url_edit)
+
+        api_token_edit = QLineEdit()
+        api_token_edit.setText(current.get('api_token', ''))
+        api_token_edit.setPlaceholderText('Token de autorização Bearer')
+        api_token_edit.setEchoMode(QLineEdit.Password)
+        form.addRow('Token de autorização:', api_token_edit)
+
+        db_url_edit = QLineEdit()
+        db_url_edit.setText(current.get('database_url', ''))
+        db_url_edit.setPlaceholderText('postgresql://user:pass@host:5432/db')
+        form.addRow('URL do banco:', db_url_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+
+        main_layout = QVBoxLayout(dlg)
+        main_layout.addLayout(form)
+        main_layout.addWidget(buttons)
+
+        if dlg.exec() == QDialog.Accepted:
+            api_url = api_url_edit.text().strip()
+            api_token = api_token_edit.text().strip()
+            db_url = db_url_edit.text().strip()
+
+            if not api_token:
+                QMessageBox.warning(self, 'Atenção', 'O token de autorização não pode ser vazio.')
+                return
+
+            if save_api_config:
+                save_api_config(api_url, api_token, db_url)
+                QMessageBox.information(self, 'Sucesso', f'Configurações salvas em:\n{get_config_path()}')
 
     def remove_cnpj(self):
         """Remove o CNPJ selecionado na lista (se houver seleção)."""
@@ -303,9 +328,6 @@ class LicencaWindow(QMainWindow):
             self.gerado_em_label.setText(f'Gerado em: {ge}')
         else:
             self.gerado_em_label.setText('')
-        # popula o campo de token com o token carregado do arquivo
-        if getattr(self, 'token_edit', None):
-            self.token_edit.setText(token)
         self.current_path = path
         QMessageBox.information(self, 'OK', 'Licença carregada com sucesso.')
 
@@ -378,26 +400,30 @@ class LicencaWindow(QMainWindow):
                 return
 
         try:
-            # Usa o token fixo informado pelo usuário no campo de texto.
-            token = ''
-            if getattr(self, 'token_edit', None):
-                token = self.token_edit.text().strip()
+            # Obtém token de autorização e database_url da configuração da API
+            api_cfg = get_api_config() if get_api_config else {}
+            token = api_cfg.get('api_token', '').strip()
             if not token:
-                QMessageBox.warning(self, 'Atenção', 'É obrigatório informar o token da licença.')
+                QMessageBox.warning(
+                    self, 'Atenção',
+                    'Token de autorização não configurado.\nClique em "⚙ Config API" para configurar.'
+                )
                 return
-            
-            # Obtém a database_url da configuração
-            database_url = None
-            if get_database_config:
+
+            api_url = api_cfg.get('api_url', '').strip() or None
+            database_url = api_cfg.get('database_url', '').strip() or None
+            # Fallback: variável de ambiente DATABASE_URL
+            if not database_url and get_database_config:
                 db_config = get_database_config()
                 if db_config and db_config.get('type') == 'sql':
                     database_url = db_config.get('url')
-            
+
             # Salva o token no arquivo de licença (formato JSON com metadata)
             meta = {
                 'cnpjs': cnpjs,
                 'ids_celular': ids_celular,
                 'validade': validade,
+                'api_url': api_url,
                 'database_url': database_url,
                 'nome_cliente': nome_cliente,
                 'sql_servidor': sql_servidor,
@@ -458,8 +484,6 @@ class LicencaWindow(QMainWindow):
             self.sql_servidor_edit.setText('')
         if getattr(self, 'sql_banco_edit', None):
             self.sql_banco_edit.setText('')
-        if getattr(self, 'token_edit', None):
-            self.token_edit.setText('')
         self.current_path = None
         self.original_cnpjs_str = None  # Reseta a string original
         QMessageBox.information(self, 'Novo', 'Criando nova licença — preencha os campos e clique em Salvar.')

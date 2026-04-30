@@ -232,6 +232,7 @@ def salvar_licenca(token, caminho="licenca.key", payload_meta=None):
             "ids": payload_meta.get("ids") or payload_meta.get("ids_celular") or [],
             "token": token,
             "validade": payload_meta.get("validade"),
+            "api_url": payload_meta.get("api_url") or "",
             "database_url": payload_meta.get("database_url"),
             "nome_cliente": payload_meta.get("nome_cliente") or "",
             "sql_servidor": payload_meta.get("sql_servidor") or "",
@@ -289,6 +290,7 @@ def carregar_licenca_de_arquivo(caminho="licenca.key"):
                     'sql_servidor': doc.get('sql_servidor', ''),
                     'sql_banco': doc.get('sql_banco', ''),
                     'database_url': doc.get('database_url', ''),
+                    'api_url': doc.get('api_url', ''),
                 }
         except Exception:
             token = None

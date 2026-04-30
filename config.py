@@ -69,6 +69,31 @@ def get_database_config():
     return None
 
 
+def get_api_config():
+    """Retorna a configuração da API (api_url, api_token, database_url) do JSON local.
+    
+    Retorna: dict com chaves 'api_url', 'api_token', 'database_url' (podem ser strings vazias).
+    """
+    config = load_config()
+    return {
+        'api_url': config.get('api_url', ''),
+        'api_token': config.get('api_token', ''),
+        'database_url': config.get('database_url', ''),
+    }
+
+
+def save_api_config(api_url: str, api_token: str, database_url: str):
+    """Salva as configurações de API no arquivo JSON local.
+    
+    Mantém outras chaves existentes e atualiza apenas api_url, api_token e database_url.
+    """
+    config = load_config()
+    config['api_url'] = api_url.strip()
+    config['api_token'] = api_token.strip()
+    config['database_url'] = database_url.strip()
+    return save_config(config)
+
+
 def configure_database_interactive():
     """Menu interativo para configurar a conexão com o banco."""
     print('\n=== Configuração de Banco de Dados ===')
