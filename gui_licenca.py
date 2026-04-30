@@ -411,12 +411,12 @@ class LicencaWindow(QMainWindow):
                 return
 
             api_url = api_cfg.get('api_url', '').strip() or None
-            database_url = api_cfg.get('database_url', '').strip() or None
+            api_database_url = api_cfg.get('database_url', '').strip() or None
             # Fallback: variável de ambiente DATABASE_URL
-            if not database_url and get_database_config:
+            if not api_database_url and get_database_config:
                 db_config = get_database_config()
                 if db_config and db_config.get('type') == 'sql':
-                    database_url = db_config.get('url')
+                    api_database_url = db_config.get('url')
 
             # Salva o token no arquivo de licença (formato JSON com metadata)
             meta = {
@@ -424,7 +424,8 @@ class LicencaWindow(QMainWindow):
                 'ids_celular': ids_celular,
                 'validade': validade,
                 'api_url': api_url,
-                'database_url': database_url,
+                'api_authorization': token,
+                'api_database_url': api_database_url,
                 'nome_cliente': nome_cliente,
                 'sql_servidor': sql_servidor,
                 'sql_banco': sql_banco,
