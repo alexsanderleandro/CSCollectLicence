@@ -23,6 +23,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtCore import QDate
 
 from licenca import (
+    gerar_licenca,
     salvar_licenca,
     carregar_licenca_de_arquivo,
     registrar_tokens_por_cnpjs_single,
@@ -402,8 +403,8 @@ class LicencaWindow(QMainWindow):
         try:
             # Obtém token de autorização e database_url da configuração da API
             api_cfg = get_api_config() if get_api_config else {}
-            token = api_cfg.get('api_token', '').strip()
-            if not token:
+            api_token = api_cfg.get('api_token', '').strip()
+            if not api_token:
                 QMessageBox.warning(
                     self, 'Atenção',
                     'Token de autorização não configurado.\nClique em "⚙ Config API" para configurar.'
@@ -418,19 +419,21 @@ class LicencaWindow(QMainWindow):
                 if db_config and db_config.get('type') == 'sql':
                     api_database_url = db_config.get('url')
 
-            # Salva o token no arquivo de licença (formato JSON com metadata)
+            # Gera token de licença e salva no arquivo .key
+            # NOTA: api_authorization e api_database_url NÃO são gravados no .key;
+            # serão armazenados criptografados em repouso no banco Neon (tabela clientes).
+            lic_token = gerar_licenca(cnpjs, ids_celular, validade or '9999-12-31',
+                                      nome_cliente, sql_servidor, sql_banco)
             meta = {
                 'cnpjs': cnpjs,
                 'ids_celular': ids_celular,
                 'validade': validade,
                 'api_url': api_url,
-                'api_authorization': token,
-                'api_database_url': api_database_url,
                 'nome_cliente': nome_cliente,
                 'sql_servidor': sql_servidor,
                 'sql_banco': sql_banco,
             }
-            salvar_licenca(token, path, payload_meta=meta)
+            salvar_licenca(lic_token, path, payload_meta=meta)
             
             # Registra no banco de dados (se configurado)
             try:
@@ -447,7 +450,14 @@ class LicencaWindow(QMainWindow):
                     except Exception:
                         pass  # Ignora erro ao deletar (pode não existir mais)
                 
-                registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade, ativa, nome_cliente, sql_servidor, sql_banco)
+                # api_authorization e api_database_url são criptografados em repouso
+                # dentro de registrar_tokens_por_cnpjs_single antes de persistir no banco.
+                registrar_tokens_por_cnpjs_single(
+                    cnpjs_str, ids_str, lic_token, validade, ativa,
+                    nome_cliente, sql_servidor, sql_banco,
+                    api_authorization=api_token,
+                    api_database_url=api_database_url or '',
+                )
                 
                 # Atualiza a string original para refletir o novo estado
                 self.original_cnpjs_str = cnpjs_str

@@ -6,6 +6,12 @@ import hashlib
 import secrets
 import copy
 import urllib.parse
+
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    _AESGCM_AVAILABLE = True
+except ImportError:
+    _AESGCM_AVAILABLE = False
 try:
     import requests
 except Exception:
@@ -47,6 +53,50 @@ if MASTER_KEY is None:
         "Variável de ambiente MASTER_KEY não definida. Defina-a ou instale python-dotenv e crie um arquivo .env com MASTER_KEY."
     )
 MASTER_KEY_BYTES = MASTER_KEY.encode("utf-8")
+
+
+def _derive_encryption_key() -> bytes:
+    """Deriva chave AES-256 a partir de MASTER_KEY usando SHA-256."""
+    return hashlib.sha256(MASTER_KEY_BYTES).digest()
+
+
+def _encrypt_field(plaintext: str) -> str:
+    """Criptografa um campo de texto usando AES-256-GCM.
+
+    Retorna string base64 no formato: base64(nonce[12] + ciphertext+tag).
+    Retorna string vazia se `plaintext` for vazio/None.
+    Lança RuntimeError se a biblioteca `cryptography` não estiver instalada.
+    """
+    if not plaintext:
+        return ''
+    if not _AESGCM_AVAILABLE:
+        raise RuntimeError(
+            'Biblioteca `cryptography` não instalada. Execute: pip install cryptography>=41.0.0'
+        )
+    key = _derive_encryption_key()
+    nonce = os.urandom(12)  # 96 bits recomendados para GCM
+    aesgcm = AESGCM(key)
+    ct = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), None)
+    return base64.b64encode(nonce + ct).decode('ascii')
+
+
+def _decrypt_field(ciphertext: str) -> str:
+    """Descriptografa um campo criptografado por `_encrypt_field`.
+
+    Retorna string vazia se `ciphertext` for vazio/None.
+    Lança RuntimeError se a biblioteca `cryptography` não estiver instalada.
+    """
+    if not ciphertext:
+        return ''
+    if not _AESGCM_AVAILABLE:
+        raise RuntimeError(
+            'Biblioteca `cryptography` não instalada. Execute: pip install cryptography>=41.0.0'
+        )
+    key = _derive_encryption_key()
+    raw = base64.b64decode(ciphertext.encode('ascii'))
+    nonce, ct = raw[:12], raw[12:]
+    aesgcm = AESGCM(key)
+    return aesgcm.decrypt(nonce, ct, None).decode('utf-8')
 
 
 def _b64u_encode(b: bytes) -> str:
@@ -233,11 +283,11 @@ def salvar_licenca(token, caminho="licenca.key", payload_meta=None):
             "token": token,
             "validade": payload_meta.get("validade"),
             "api_url": payload_meta.get("api_url") or "",
-            "api_authorization": payload_meta.get("api_authorization") or "",
-            "api_database_url": payload_meta.get("api_database_url") or "",
             "nome_cliente": payload_meta.get("nome_cliente") or "",
             "sql_servidor": payload_meta.get("sql_servidor") or "",
             "sql_banco": payload_meta.get("sql_banco") or "",
+            # NOTA: api_authorization e api_database_url NÃO são gravados no .key;
+            # eles são armazenados criptografados no banco Neon (tabela clientes).
         }
         # grava JSON legível (cp1252/latin-1 para compatibilidade com caracteres como ô)
         with open(caminho, "w", encoding='cp1252') as f:
@@ -291,8 +341,8 @@ def carregar_licenca_de_arquivo(caminho="licenca.key"):
                     'sql_servidor': doc.get('sql_servidor', ''),
                     'sql_banco': doc.get('sql_banco', ''),
                     'api_url': doc.get('api_url', ''),
-                    'api_authorization': doc.get('api_authorization', ''),
-                    'api_database_url': doc.get('api_database_url', '') or doc.get('database_url', ''),
+                    # api_authorization e api_database_url não ficam mais no .key;
+                    # são lidos diretamente do banco Neon (criptografados em repouso).
                 }
         except Exception:
             token = None
@@ -484,7 +534,7 @@ def deletar_registro_por_cnpjs(cnpjs_str):
     return _exec_db_statements(statements)
 
 
-def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', ativa=True, nome_cliente='', sql_servidor='', sql_banco=''):
+def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', ativa=True, nome_cliente='', sql_servidor='', sql_banco='', api_authorization='', api_database_url=''):
     """Insere/atualiza um ÚNICO registro na tabela `clientes` com CNPJs e IDs separados por vírgula.
     
     Parâmetros:
@@ -496,8 +546,12 @@ def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', at
     - nome_cliente: nome do cliente vinculado à licença (máx 30 caracteres)
     - sql_servidor: nome do servidor SQL (máx 30 caracteres)
     - sql_banco: nome do banco de dados (máx 30 caracteres)
+    - api_authorization: token Bearer da API do cliente (será criptografado em repouso no banco)
+    - api_database_url: connection string do banco do cliente (será criptografada em repouso no banco)
     
-    Tabela esperada: clientes (cnpj VARCHAR PRIMARY KEY, idcelular TEXT, token TEXT, validade VARCHAR, ativo BOOLEAN, nome_cliente VARCHAR, sql_servidor VARCHAR, sql_banco VARCHAR)
+    Tabela esperada: clientes (cnpj VARCHAR PRIMARY KEY, idcelular TEXT, token TEXT, validade VARCHAR,
+    ativo BOOLEAN, nome_cliente VARCHAR, sql_servidor VARCHAR, sql_banco VARCHAR,
+    api_authorization TEXT, api_database_url TEXT)
     """
     if not cnpjs_str:
         return
@@ -519,26 +573,44 @@ def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', at
     # garante que o token contém assinatura (payload.signature)
     token = _ensure_token_complete(token)
 
+    # Criptografa em repouso os campos sensíveis ANTES de enviar ao banco
+    api_authorization_enc = _encrypt_field(api_authorization) if api_authorization else None
+    api_database_url_enc  = _encrypt_field(api_database_url)  if api_database_url  else None
+
     # Executa SQL
     if db_config['type'] == 'rest':
         return _registrar_tokens_single_rest(
             db_config['url'], cnpjs_str, ids_str, token, validade,
             api_key=db_config.get('api_key'),
-            nome_cliente=nome_cliente, sql_servidor=sql_servidor, sql_banco=sql_banco
+            nome_cliente=nome_cliente, sql_servidor=sql_servidor, sql_banco=sql_banco,
+            api_authorization_enc=api_authorization_enc,
+            api_database_url_enc=api_database_url_enc,
         )
     q = (
-        "INSERT INTO clientes (cnpj, idcelular, token, validade, ativo, nome_cliente, sql_servidor, sql_banco, reginclusao, dataalteracao) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now(), now()) "
-        "ON CONFLICT (cnpj) DO UPDATE SET idcelular = EXCLUDED.idcelular, token = EXCLUDED.token, validade = EXCLUDED.validade, ativo = EXCLUDED.ativo, nome_cliente = EXCLUDED.nome_cliente, sql_servidor = EXCLUDED.sql_servidor, sql_banco = EXCLUDED.sql_banco, dataalteracao = now();"
+        "INSERT INTO clientes (cnpj, idcelular, token, validade, ativo, nome_cliente, sql_servidor, sql_banco, api_authorization, api_database_url, reginclusao, dataalteracao) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now()) "
+        "ON CONFLICT (cnpj) DO UPDATE SET idcelular = EXCLUDED.idcelular, token = EXCLUDED.token, "
+        "validade = EXCLUDED.validade, ativo = EXCLUDED.ativo, nome_cliente = EXCLUDED.nome_cliente, "
+        "sql_servidor = EXCLUDED.sql_servidor, sql_banco = EXCLUDED.sql_banco, "
+        "api_authorization = EXCLUDED.api_authorization, api_database_url = EXCLUDED.api_database_url, "
+        "dataalteracao = now();"
     )
     # converte string vazia de validade para NULL para colunas do tipo DATE
     validade_param = validade if validade else None
-    statements = [(q, (cnpjs_str, ids_str, token, validade_param, ativa, nome_cliente, sql_servidor or None, sql_banco or None))]
+    statements = [(q, (
+        cnpjs_str, ids_str, token, validade_param, ativa,
+        nome_cliente, sql_servidor or None, sql_banco or None,
+        api_authorization_enc, api_database_url_enc,
+    ))]
     return _exec_db_statements(statements)
 
 
-def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade='', api_key=None, nome_cliente='', sql_servidor='', sql_banco=''):
-    """Registra via REST um único registro com CNPJs e IDs separados por vírgula."""
+def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade='', api_key=None, nome_cliente='', sql_servidor='', sql_banco='', api_authorization_enc=None, api_database_url_enc=None):
+    """Registra via REST um único registro com CNPJs e IDs separados por vírgula.
+    
+    `api_authorization_enc` e `api_database_url_enc` devem chegar já criptografados
+    (saída de `_encrypt_field`). São armazenados diretamente como texto no banco.
+    """
     if requests is None:
         raise RuntimeError('Biblioteca requests não está disponível. Instale com pip install requests')
 
@@ -565,6 +637,8 @@ def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade=
         'nome_cliente': nome_cliente or None,
         'sql_servidor': sql_servidor or None,
         'sql_banco': sql_banco or None,
+        'api_authorization': api_authorization_enc,   # já criptografado
+        'api_database_url': api_database_url_enc,     # já criptografado
         'reginclusao': now_iso,
         'dataalteracao': now_iso,
     }
