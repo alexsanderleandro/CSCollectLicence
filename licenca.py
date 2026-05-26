@@ -135,7 +135,7 @@ def _ensure_token_complete(token: str) -> str:
     return f"{token}.{_b64u_encode(assinatura)}"
 
 
-def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco):
+def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco, api_authorization="", api_database_url=""):
     """Gera um token de licença.
 
     O token é uma string compacta e assinada que contém o payload JSON
@@ -193,6 +193,11 @@ def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_
         "sql_banco": sql_banco,
         "gerado_em": datetime.now().astimezone().replace(microsecond=0).isoformat(),
     }
+    # Adiciona campos opcionais de autorização e database URL se fornecidos
+    if api_authorization:
+        payload["api_authorization"] = api_authorization
+    if api_database_url:
+        payload["api_database_url"] = api_database_url
 
     # 3) Serializa para JSON (bytes UTF-8)
     dados = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -286,8 +291,8 @@ def salvar_licenca(token, caminho="licenca.key", payload_meta=None):
             "nome_cliente": payload_meta.get("nome_cliente") or "",
             "sql_servidor": payload_meta.get("sql_servidor") or "",
             "sql_banco": payload_meta.get("sql_banco") or "",
-            # NOTA: api_authorization e api_database_url NÃO são gravados no .key;
-            # eles são armazenados criptografados no banco Neon (tabela clientes).
+            "api_authorization": payload_meta.get("api_authorization") or "",
+            "api_database_url": payload_meta.get("api_database_url") or "",
         }
         # grava JSON legível (cp1252/latin-1 para compatibilidade com caracteres como ô)
         with open(caminho, "w", encoding='cp1252') as f:
@@ -341,8 +346,8 @@ def carregar_licenca_de_arquivo(caminho="licenca.key"):
                     'sql_servidor': doc.get('sql_servidor', ''),
                     'sql_banco': doc.get('sql_banco', ''),
                     'api_url': doc.get('api_url', ''),
-                    # api_authorization e api_database_url não ficam mais no .key;
-                    # são lidos diretamente do banco Neon (criptografados em repouso).
+                    'api_authorization': doc.get('api_authorization', ''),
+                    'api_database_url': doc.get('api_database_url', ''),
                 }
         except Exception:
             token = None

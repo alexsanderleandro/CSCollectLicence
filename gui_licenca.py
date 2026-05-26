@@ -103,6 +103,27 @@ class LicencaWindow(QMainWindow):
 
         layout.addLayout(row_sql)
 
+        # API Authorization Token e Database URL
+        row_api = QHBoxLayout()
+
+        col_api_auth = QVBoxLayout()
+        col_api_auth.addWidget(QLabel('API Authorization Token (máx 100 caracteres):'))
+        self.api_authorization_edit = QLineEdit()
+        self.api_authorization_edit.setMaxLength(100)
+        self.api_authorization_edit.setPlaceholderText('Token de autenticação da API')
+        col_api_auth.addWidget(self.api_authorization_edit)
+        row_api.addLayout(col_api_auth)
+
+        col_api_db = QVBoxLayout()
+        col_api_db.addWidget(QLabel('API Database URL (máx 100 caracteres):'))
+        self.api_database_url_edit = QLineEdit()
+        self.api_database_url_edit.setMaxLength(100)
+        self.api_database_url_edit.setPlaceholderText('URL da base de dados da API')
+        col_api_db.addWidget(self.api_database_url_edit)
+        row_api.addLayout(col_api_db)
+
+        layout.addLayout(row_api)
+
         # CNPJs list
         self.cnpj_list = QListWidget()
         layout.addWidget(QLabel('CNPJs liberados (mínimo 1):'))
@@ -298,6 +319,14 @@ class LicencaWindow(QMainWindow):
         if getattr(self, 'sql_banco_edit', None):
             self.sql_banco_edit.setText(sql_banco)
 
+        # API Authorization e Database URL, se presentes
+        api_auth = payload.get('api_authorization', '')
+        api_db_url = payload.get('api_database_url', '')
+        if getattr(self, 'api_authorization_edit', None):
+            self.api_authorization_edit.setText(api_auth)
+        if getattr(self, 'api_database_url_edit', None):
+            self.api_database_url_edit.setText(api_db_url)
+
         self.cnpj_list.clear()
         cnpjs_carregados = payload.get('cnpjs', [])
         for c in cnpjs_carregados:
@@ -412,18 +441,29 @@ class LicencaWindow(QMainWindow):
                 return
 
             api_url = api_cfg.get('api_url', '').strip() or None
-            api_database_url = api_cfg.get('database_url', '').strip() or None
+            api_database_url_cfg = api_cfg.get('database_url', '').strip() or None
             # Fallback: variável de ambiente DATABASE_URL
-            if not api_database_url and get_database_config:
+            if not api_database_url_cfg and get_database_config:
                 db_config = get_database_config()
                 if db_config and db_config.get('type') == 'sql':
-                    api_database_url = db_config.get('url')
+                    api_database_url_cfg = db_config.get('url')
+
+            # Coleta os novos campos de API
+            api_authorization = ''
+            api_database_url = ''
+            if getattr(self, 'api_authorization_edit', None):
+                api_authorization = self.api_authorization_edit.text().strip()
+            if getattr(self, 'api_database_url_edit', None):
+                api_database_url = self.api_database_url_edit.text().strip()
 
             # Gera token de licença e salva no arquivo .key
             # NOTA: api_authorization e api_database_url NÃO são gravados no .key;
             # serão armazenados criptografados em repouso no banco Neon (tabela clientes).
             lic_token = gerar_licenca(cnpjs, ids_celular, validade or '9999-12-31',
-                                      nome_cliente, sql_servidor, sql_banco)
+                                      nome_cliente, sql_servidor, sql_banco,
+                                      api_authorization=api_authorization,
+                                      api_database_url=api_database_url)
+
             meta = {
                 'cnpjs': cnpjs,
                 'ids_celular': ids_celular,
@@ -432,6 +472,8 @@ class LicencaWindow(QMainWindow):
                 'nome_cliente': nome_cliente,
                 'sql_servidor': sql_servidor,
                 'sql_banco': sql_banco,
+                'api_authorization': api_authorization,
+                'api_database_url': api_database_url,
             }
             salvar_licenca(lic_token, path, payload_meta=meta)
             
@@ -514,3 +556,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
