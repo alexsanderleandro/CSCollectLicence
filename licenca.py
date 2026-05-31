@@ -712,7 +712,7 @@ def _registrar_tokens_por_cnpjs_rest(base_url, cnpjs, token, api_key=None, arq_l
         raise RuntimeError(f'Falha na conexão REST: {e}')
 
 
-def gerar_activation_token(cnpjs, ttl_horas=24, gerado_por=''):
+def gerar_activation_token(cnpjs, device_id='', ttl_horas=24, gerado_por=''):
     """Gera um token de ativação avulso para uso no fluxo "Ativar Online".
 
     O token raw (43 chars URL-safe) é retornado UMA única vez para ser
@@ -720,6 +720,7 @@ def gerar_activation_token(cnpjs, ttl_horas=24, gerado_por=''):
 
     Parâmetros:
     - cnpjs: lista de CNPJs (ou string com um CNPJ) para os quais o token é válido.
+    - device_id: ID do celular do cliente (obtido na primeira abertura do app).
     - ttl_horas: tempo de vida em horas (padrão 24h).
     - gerado_por: identificação do operador (para auditoria).
 
@@ -757,13 +758,15 @@ def gerar_activation_token(cnpjs, ttl_horas=24, gerado_por=''):
             engine = _sa.create_engine(db_config['url'], pool_pre_ping=True)
             with engine.connect() as conn:
                 conn.execute(_sa.text("""
-                    INSERT INTO activation_tokens (cnpj, token_hash, criado_em, expira_em, gerado_por)
-                    VALUES (:cnpj, :hash, :criado, :expira, :gby)
+                    INSERT INTO activation_tokens
+                        (cnpj, token_hash, criado_em, expira_em, device_id_autorizado, gerado_por)
+                    VALUES (:cnpj, :hash, :criado, :expira, :dev, :gby)
                 """), {
                     'cnpj': cnpj_str,
                     'hash': token_hash,
                     'criado': now_utc,
                     'expira': expira_em,
+                    'dev': (device_id or '').strip(),
                     'gby': gerado_por or '',
                 })
                 conn.commit()

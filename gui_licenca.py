@@ -541,6 +541,19 @@ class LicencaWindow(QMainWindow):
             QMessageBox.warning(self, 'CNPJs obrigatórios', 'Adicione pelo menos um CNPJ antes de gerar o token.')
             return
 
+        device_id_str, ok0 = QInputDialog.getText(
+            self, 'Device ID do cliente',
+            'Cole o Device ID exibido no app do cliente\n(tela de ativação → campo DEVICE ID):',
+            text=''
+        )
+        if not ok0:
+            return
+        device_id_str = device_id_str.strip()
+        if not device_id_str:
+            QMessageBox.warning(self, 'Device ID obrigatório',
+                                'O Device ID é necessário para vincular o token ao celular do cliente.')
+            return
+
         ttl_str, ok = QInputDialog.getText(
             self, 'Validade do token', 'Duração em horas (padrão: 24):', text='24'
         )
@@ -562,7 +575,8 @@ class LicencaWindow(QMainWindow):
 
         try:
             raw_token, expira_em = gerar_activation_token(
-                cnpjs, ttl_horas=ttl_horas, gerado_por=gerado_por_str.strip()
+                cnpjs, device_id=device_id_str,
+                ttl_horas=ttl_horas, gerado_por=gerado_por_str.strip()
             )
         except Exception as e:
             QMessageBox.critical(self, 'Erro ao gerar token', str(e))
@@ -574,6 +588,7 @@ class LicencaWindow(QMainWindow):
             f'Token (copie e envie ao cliente):\n\n'
             f'{raw_token}\n\n'
             f'CNPJs: {", ".join(cnpjs)}\n'
+            f'Device ID: {device_id_str}\n'
             f'Expira em: {expira_str}\n\n'
             f'⚠ Este token é exibido apenas uma vez e não pode ser recuperado.'
         )
