@@ -12,6 +12,7 @@ Banco Neon (tabela clientes)
   ├── cnpj                  → "12345678000199,98765432000188"  (chave primária)
   ├── idcelular             → "a3e9e3a0a4659652,device-123"
   ├── token                 → "eyJjbnBqcy....<sig>"            (HMAC-SHA256 assinado)
+    ├── arq_licenca           → "{ ...conteúdo do arquivo .key... }"  (texto completo para download remoto)
   ├── validade              → "2026-12-31"
   ├── ativo                 → true
   ├── nome_cliente          → "Empresa ABC"
@@ -169,7 +170,7 @@ string masterKey = Environment.GetEnvironmentVariable("MASTER_KEY")
     ?? throw new Exception("MASTER_KEY não definida.");
 
 // 1. Buscar registro no banco (Npgsql, Dapper, EF, etc.)
-//    SELECT cnpj, idcelular, token, validade, ativo, nome_cliente,
+//    SELECT cnpj, idcelular, token, arq_licenca, validade, ativo, nome_cliente,
 //           sql_servidor, sql_banco, api_authorization, api_database_url
 //    FROM clientes WHERE cnpj LIKE '%' + cnpjEmpresa + '%'
 
@@ -372,6 +373,7 @@ Após decodificar e verificar a assinatura, o JSON do payload tem a seguinte est
 | `cnpj` | varchar(255) | Não | Chave primária. Um ou mais CNPJs separados por vírgula |
 | `idcelular` | text | Não | Um ou mais IDs de dispositivo separados por vírgula |
 | `token` | text | Não | Token HMAC-SHA256 — validar assinatura antes de usar |
+| `arq_licenca` | text | Não | Conteúdo textual completo do arquivo `.key`, para download via API/ponte |
 | `validade` | varchar(10) | Não | YYYY-MM-DD ou NULL (sem validade) |
 | `ativo` | boolean | Não | Verificar antes de qualquer operação |
 | `nome_cliente` | varchar(30) | Não | Nome do cliente para exibição |
@@ -405,7 +407,7 @@ Após decodificar e verificar a assinatura, o JSON do payload tem a seguinte est
 ### Busca por CNPJ único (mais comum)
 
 ```sql
-SELECT cnpj, idcelular, token, validade, ativo, nome_cliente,
+SELECT cnpj, idcelular, token, arq_licenca, validade, ativo, nome_cliente,
        sql_servidor, sql_banco, api_authorization, api_database_url
 FROM clientes
 WHERE cnpj = '12345678000199'          -- CNPJ único (chave primária exata)

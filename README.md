@@ -84,6 +84,7 @@ Arquivos de migration disponíveis:
 - `migration_neon_schema.sql` — cria/ajusta tabelas `clientes` e `cargas` e cria a tabela `contagens`.
 - `migration_neon_schema_v2.sql` — adiciona `idcelular` e `cnpj` em `clientes`, `cargas` e `contagens` e cria índices únicos compostos (`id, cnpj, idcelular`).
 - `migration_neon_schema_v3.sql` — adiciona coluna `validade` do tipo `date` em `clientes`.
+- `migration_neon_schema_v7.sql` — adiciona coluna `arq_licenca` em `clientes` para armazenar o conteúdo do arquivo `.key` e permitir download remoto via API ponte.
 
 Resumo do schema esperado (após aplicar as migrations):
 
@@ -92,6 +93,7 @@ Resumo do schema esperado (após aplicar as migrations):
 	- `nome_cliente` (text)
 	- `cnpj` (text)
 	- `token` (text) — token assinado (payload.signature)
+	- `arq_licenca` (text) — conteúdo textual completo do arquivo `.key`
 	- `idcelular` (text)
 	- `reginclusao` (timestamptz) — timestamp de criação (DEFAULT now())
 	- `dataalteracao` (timestamptz) — atualizado por trigger antes de UPDATE
@@ -130,6 +132,7 @@ $env:DATABASE_URL='postgresql://USUARIO:SENHA@HOST/DB?sslmode=require&channel_bi
 .\venv\Scripts\python.exe .\apply_migration.py "%DATABASE_URL%" migration_neon_schema.sql
 .\venv\Scripts\python.exe .\apply_migration.py "%DATABASE_URL%" migration_neon_schema_v2.sql
 .\venv\Scripts\python.exe .\apply_migration.py "%DATABASE_URL%" migration_neon_schema_v3.sql
+.\venv\Scripts\python.exe .\apply_migration.py "%DATABASE_URL%" migration_neon_schema_v7.sql
 ```
 
 Ou com `psql`:
@@ -138,6 +141,7 @@ Ou com `psql`:
 psql 'postgresql://USUARIO:SENHA@HOST/DB?sslmode=require&channel_binding=require' -f migration_neon_schema.sql
 psql 'postgresql://USUARIO:SENHA@HOST/DB?sslmode=require&channel_binding=require' -f migration_neon_schema_v2.sql
 psql 'postgresql://USUARIO:SENHA@HOST/DB?sslmode=require&channel_binding=require' -f migration_neon_schema_v3.sql
+psql 'postgresql://USUARIO:SENHA@HOST/DB?sslmode=require&channel_binding=require' -f migration_neon_schema_v7.sql
 ```
 
 Após aplicar, verifique as colunas e a existência da trigger conforme descrito no README.
@@ -197,3 +201,42 @@ Notas úteis:
 - Ao implementar em C#/.NET, use decodificação base64 URL-safe e HMAC-SHA256
 	com a mesma chave. Um helper C# de exemplo está disponível no repositório
 	(veja histórico de commits / mensagens do workspace).
+
+API ponte para download da licença
+----------------------------------
+
+O arquivo [api_licenca_bridge.py](api_licenca_bridge.py) expõe uma API HTTP simples para o APK e o CSCollectManager baixarem a licença pela internet a partir do campo `clientes.arq_licenca`.
+
+Configuração mínima:
+
+- Banco SQL direto: `DATABASE_URL` ou `NEON_DATABASE_URL`
+- Ou REST do Neon: `NEON_REST_URL` (ou `NEON_REST_API_URL`) + `NEON_API_KEY`
+- Opcional: `LICENSE_API_TOKEN` para exigir `Authorization: Bearer <token>` nas chamadas
+- Opcional: `LICENSE_API_HOST` e `LICENSE_API_PORT` (padrão `0.0.0.0:8080`)
+
+Executar:
+
+```powershell
+.\venv\Scripts\python.exe .\api_licenca_bridge.py
+```
+
+Endpoints:
+
+- `GET /health`
+- `GET /licencas/metadata?cnpj=12345678000199&id_celular=device-1`
+- `GET /licencas/download?cnpj=12345678000199&id_celular=device-1`
+
+Comportamento:
+
+- Busca a licença pelo CNPJ, inclusive quando a coluna `cnpj` contém vários CNPJs separados por vírgula
+- Valida `ativo = true`
+- Bloqueia licença vencida com base na coluna `validade`
+- Se `id_celular` for informado, valida se o dispositivo está autorizado
+- Retorna o conteúdo de `arq_licenca`; se a coluna estiver vazia em registros antigos, faz fallback para `token`
+
+Exemplo com token Bearer:
+
+```powershell
+$headers = @{ Authorization = 'Bearer SEU_TOKEN_DA_API' }
+Invoke-WebRequest 'http://localhost:8080/licencas/download?cnpj=12345678000199&id_celular=device-1' -Headers $headers -OutFile '.\Licenca.key'
+```

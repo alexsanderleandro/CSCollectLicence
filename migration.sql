@@ -3,7 +3,8 @@ BEGIN;
 
 ALTER TABLE clientes
   ADD COLUMN IF NOT EXISTS reginclusao timestamptz DEFAULT now(),
-  ADD COLUMN IF NOT EXISTS dataalteracao timestamptz DEFAULT now();
+  ADD COLUMN IF NOT EXISTS dataalteracao timestamptz DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS arq_licenca text;
 
 -- cria/atualiza a função que atualiza dataalteracao
 CREATE OR REPLACE FUNCTION trg_dataalteracao()

@@ -27,6 +27,7 @@ from licenca import (
     salvar_licenca,
     carregar_licenca_de_arquivo,
     registrar_tokens_por_cnpjs_single,
+    gerar_activation_token,
 )
 try:
     from config import configure_database_interactive, get_database_config, get_config_path, load_config, get_api_config, save_api_config
@@ -187,6 +188,12 @@ class LicencaWindow(QMainWindow):
         btn_config_db = QPushButton('⚙ Config API')
         btn_config_db.clicked.connect(self.configure_api)
         actions.addWidget(btn_config_db)
+
+        # Botão: gerar token de ativação avulso (fluxo "Ativar Online" sem .key)
+        btn_gen_token = QPushButton('🔑 Gerar Token')
+        btn_gen_token.setToolTip('Gera token de ativação de uso único para o cliente ativar sem arquivo .key')
+        btn_gen_token.clicked.connect(self.gerar_token_ativacao)
+        actions.addWidget(btn_gen_token)
         
         layout.addLayout(actions)
 
@@ -475,7 +482,7 @@ class LicencaWindow(QMainWindow):
                 'api_authorization': api_authorization,
                 'api_database_url': api_database_url,
             }
-            salvar_licenca(lic_token, path, payload_meta=meta)
+            conteudo_licenca = salvar_licenca(lic_token, path, payload_meta=meta)
             
             # Registra no banco de dados (se configurado)
             try:
@@ -499,6 +506,7 @@ class LicencaWindow(QMainWindow):
                     nome_cliente, sql_servidor, sql_banco,
                     api_authorization=api_token,
                     api_database_url=api_database_url or '',
+                    arq_licenca=conteudo_licenca,
                 )
                 
                 # Atualiza a string original para refletir o novo estado
@@ -520,6 +528,64 @@ class LicencaWindow(QMainWindow):
         """
         # removido: geração direta de token via botão (fluxo mantido no salvar)
         return
+
+    def gerar_token_ativacao(self):
+        """Gera token avulso de ativação para o cliente usar o fluxo 'Ativar Online'.
+
+        O token é de uso único com TTL configurável e armazenado como hash SHA-256
+        na tabela `activation_tokens` do Neon. O raw token é exibido UMA vez.
+        """
+        # Coletar CNPJs da lista
+        cnpjs = [self.cnpj_list.item(i).text() for i in range(self.cnpj_list.count())]
+        if not cnpjs:
+            QMessageBox.warning(self, 'CNPJs obrigatórios', 'Adicione pelo menos um CNPJ antes de gerar o token.')
+            return
+
+        ttl_str, ok = QInputDialog.getText(
+            self, 'Validade do token', 'Duração em horas (padrão: 24):', text='24'
+        )
+        if not ok:
+            return
+        try:
+            ttl_horas = int(ttl_str.strip() or '24')
+            if ttl_horas < 1:
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(self, 'Valor inválido', 'Informe um número inteiro de horas (ex.: 24).')
+            return
+
+        gerado_por_str, ok2 = QInputDialog.getText(
+            self, 'Operador', 'Seu nome (para auditoria):', text=''
+        )
+        if not ok2:
+            return
+
+        try:
+            raw_token, expira_em = gerar_activation_token(
+                cnpjs, ttl_horas=ttl_horas, gerado_por=gerado_por_str.strip()
+            )
+        except Exception as e:
+            QMessageBox.critical(self, 'Erro ao gerar token', str(e))
+            return
+
+        expira_str = expira_em.strftime('%d/%m/%Y %H:%M UTC')
+        msg = (
+            f'Token gerado com sucesso!\n\n'
+            f'Token (copie e envie ao cliente):\n\n'
+            f'{raw_token}\n\n'
+            f'CNPJs: {", ".join(cnpjs)}\n'
+            f'Expira em: {expira_str}\n\n'
+            f'⚠ Este token é exibido apenas uma vez e não pode ser recuperado.'
+        )
+        # Copiar para clipboard automaticamente
+        try:
+            from PySide6.QtGui import QClipboard
+            from PySide6.QtWidgets import QApplication as _QApp
+            _QApp.clipboard().setText(raw_token)
+            msg += '\n\n(Copiado para a área de transferência)'
+        except Exception:
+            pass
+        QMessageBox.information(self, 'Token de Ativação', msg)
 
     def new_license(self):
         """Limpa todos os campos da GUI para criar uma nova licença do zero."""

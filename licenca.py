@@ -56,8 +56,18 @@ MASTER_KEY_BYTES = MASTER_KEY.encode("utf-8")
 
 
 def _derive_encryption_key() -> bytes:
-    """Deriva chave AES-256 a partir de MASTER_KEY usando SHA-256."""
-    return hashlib.sha256(MASTER_KEY_BYTES).digest()
+    """Deriva chave AES-256 a partir de MASTER_KEY usando PBKDF2-HMAC-SHA256.
+
+    R6: 100 000 iterações com salt fixo — mesmos parâmetros de mobile_activation.py.
+    ATENÇÃO: qualquer mudança requer re-criptografar campos no banco Neon.
+    """
+    return hashlib.pbkdf2_hmac(
+        'sha256',
+        MASTER_KEY_BYTES,
+        b'cscollect_aes_salt_v2',
+        100_000,
+        dklen=32,
+    )
 
 
 def _encrypt_field(plaintext: str) -> str:
@@ -133,6 +143,29 @@ def _ensure_token_complete(token: str) -> str:
         return token
     assinatura = hmac.new(MASTER_KEY_BYTES, dados, hashlib.sha256).digest()
     return f"{token}.{_b64u_encode(assinatura)}"
+
+
+def serializar_licenca(token, payload_meta=None):
+    """Retorna o conteúdo textual que será gravado no arquivo de licença."""
+    token = _ensure_token_complete(token)
+
+    if payload_meta:
+        # SEGURANÇA (R2): api_authorization e api_database_url NÃO são gravados no
+        # arquivo .key para evitar exposição de credenciais em texto puro.
+        # Esses campos são obtidos em runtime via /validar-licenca (HTTPS + AES no banco).
+        out = {
+            "cnpjs": payload_meta.get("cnpjs") or payload_meta.get("cnpj") or [],
+            "ids": payload_meta.get("ids") or payload_meta.get("ids_celular") or [],
+            "token": token,
+            "validade": payload_meta.get("validade"),
+            "api_url": payload_meta.get("api_url") or "",
+            "nome_cliente": payload_meta.get("nome_cliente") or "",
+            "sql_servidor": payload_meta.get("sql_servidor") or "",
+            "sql_banco": payload_meta.get("sql_banco") or "",
+        }
+        return json.dumps(out, ensure_ascii=False, indent=2)
+
+    return token
 
 
 def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco, api_authorization="", api_database_url=""):
@@ -276,30 +309,13 @@ def salvar_licenca(token, caminho="licenca.key", payload_meta=None):
     - payload_meta: dict opcional com chaves semelhantes ao payload
       (por exemplo: {'cnpjs': [...], 'ids_celular': [...], 'validade': 'YYYY-MM-DD', 'database_url': '...'}).
     """
-    # garante que o token salvo no arquivo contém payload + assinatura
-    token = _ensure_token_complete(token)
+    conteudo = serializar_licenca(token, payload_meta=payload_meta)
 
-    if payload_meta:
-        # Normaliza nomes: nosso payload usa `ids_celular`, mas o manager
-        # espera `ids` no JSON final.
-        out = {
-            "cnpjs": payload_meta.get("cnpjs") or payload_meta.get("cnpj") or [],
-            "ids": payload_meta.get("ids") or payload_meta.get("ids_celular") or [],
-            "token": token,
-            "validade": payload_meta.get("validade"),
-            "api_url": payload_meta.get("api_url") or "",
-            "nome_cliente": payload_meta.get("nome_cliente") or "",
-            "sql_servidor": payload_meta.get("sql_servidor") or "",
-            "sql_banco": payload_meta.get("sql_banco") or "",
-            "api_authorization": payload_meta.get("api_authorization") or "",
-            "api_database_url": payload_meta.get("api_database_url") or "",
-        }
-        # grava JSON legível (cp1252/latin-1 para compatibilidade com caracteres como ô)
-        with open(caminho, "w", encoding='cp1252') as f:
-            json.dump(out, f, ensure_ascii=False, indent=2)
-    else:
-        with open(caminho, "w", encoding='cp1252') as f:
-            f.write(token)
+    # R7: utf-8 garante compatibilidade com caracteres especiais em qualquer plataforma
+    with open(caminho, "w", encoding='utf-8') as f:
+        f.write(conteudo)
+
+    return conteudo
 
 
 def carregar_licenca_de_arquivo(caminho="licenca.key"):
@@ -464,7 +480,7 @@ def _exec_db_statements(statements):
                 pass
 
 
-def registrar_tokens_por_cnpjs(cnpjs, token):
+def registrar_tokens_por_cnpjs(cnpjs, token, arq_licenca=None):
     """Insere/atualiza o `token` para cada CNPJ na tabela `clientes`.
 
     Usa INSERT ... ON CONFLICT (cnpj) DO UPDATE SET token = EXCLUDED.token;
@@ -497,15 +513,15 @@ def registrar_tokens_por_cnpjs(cnpjs, token):
     if db_config['type'] == 'sql':
         statements = []
         q = (
-            "INSERT INTO clientes (cnpj, token, ativo, reginclusao, dataalteracao) "
-            "VALUES (%s, %s, true, now(), now()) "
-            "ON CONFLICT (cnpj) DO UPDATE SET token = EXCLUDED.token, dataalteracao = now();"
+            "INSERT INTO clientes (cnpj, token, arq_licenca, ativo, reginclusao, dataalteracao) "
+            "VALUES (%s, %s, %s, true, now(), now()) "
+            "ON CONFLICT (cnpj) DO UPDATE SET token = EXCLUDED.token, arq_licenca = EXCLUDED.arq_licenca, dataalteracao = now();"
         )
         for c in cnpjs:
-            statements.append((q, (c, token)))
+            statements.append((q, (c, token, arq_licenca)))
         return _exec_db_statements(statements)
     elif db_config['type'] == 'rest':
-        return _registrar_tokens_por_cnpjs_rest(db_config['url'], cnpjs, token, db_config.get('api_key'))
+        return _registrar_tokens_por_cnpjs_rest(db_config['url'], cnpjs, token, db_config.get('api_key'), arq_licenca=arq_licenca)
     else:
         raise RuntimeError('Tipo de configuração desconhecido.')
 
@@ -539,7 +555,7 @@ def deletar_registro_por_cnpjs(cnpjs_str):
     return _exec_db_statements(statements)
 
 
-def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', ativa=True, nome_cliente='', sql_servidor='', sql_banco='', api_authorization='', api_database_url=''):
+def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', ativa=True, nome_cliente='', sql_servidor='', sql_banco='', api_authorization='', api_database_url='', arq_licenca=None):
     """Insere/atualiza um ÚNICO registro na tabela `clientes` com CNPJs e IDs separados por vírgula.
     
     Parâmetros:
@@ -556,7 +572,7 @@ def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', at
     
     Tabela esperada: clientes (cnpj VARCHAR PRIMARY KEY, idcelular TEXT, token TEXT, validade VARCHAR,
     ativo BOOLEAN, nome_cliente VARCHAR, sql_servidor VARCHAR, sql_banco VARCHAR,
-    api_authorization TEXT, api_database_url TEXT)
+    api_authorization TEXT, api_database_url TEXT, arq_licenca TEXT)
     """
     if not cnpjs_str:
         return
@@ -590,14 +606,16 @@ def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', at
             nome_cliente=nome_cliente, sql_servidor=sql_servidor, sql_banco=sql_banco,
             api_authorization_enc=api_authorization_enc,
             api_database_url_enc=api_database_url_enc,
+            arq_licenca=arq_licenca,
         )
     q = (
-        "INSERT INTO clientes (cnpj, idcelular, token, validade, ativo, nome_cliente, sql_servidor, sql_banco, api_authorization, api_database_url, reginclusao, dataalteracao) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now()) "
+        "INSERT INTO clientes (cnpj, idcelular, token, validade, ativo, nome_cliente, sql_servidor, sql_banco, api_authorization, api_database_url, arq_licenca, reginclusao, dataalteracao) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now()) "
         "ON CONFLICT (cnpj) DO UPDATE SET idcelular = EXCLUDED.idcelular, token = EXCLUDED.token, "
         "validade = EXCLUDED.validade, ativo = EXCLUDED.ativo, nome_cliente = EXCLUDED.nome_cliente, "
         "sql_servidor = EXCLUDED.sql_servidor, sql_banco = EXCLUDED.sql_banco, "
         "api_authorization = EXCLUDED.api_authorization, api_database_url = EXCLUDED.api_database_url, "
+        "arq_licenca = EXCLUDED.arq_licenca, "
         "dataalteracao = now();"
     )
     # converte string vazia de validade para NULL para colunas do tipo DATE
@@ -605,12 +623,12 @@ def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', at
     statements = [(q, (
         cnpjs_str, ids_str, token, validade_param, ativa,
         nome_cliente, sql_servidor or None, sql_banco or None,
-        api_authorization_enc, api_database_url_enc,
+        api_authorization_enc, api_database_url_enc, arq_licenca,
     ))]
     return _exec_db_statements(statements)
 
 
-def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade='', api_key=None, nome_cliente='', sql_servidor='', sql_banco='', api_authorization_enc=None, api_database_url_enc=None):
+def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade='', api_key=None, nome_cliente='', sql_servidor='', sql_banco='', api_authorization_enc=None, api_database_url_enc=None, arq_licenca=None):
     """Registra via REST um único registro com CNPJs e IDs separados por vírgula.
     
     `api_authorization_enc` e `api_database_url_enc` devem chegar já criptografados
@@ -644,6 +662,7 @@ def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade=
         'sql_banco': sql_banco or None,
         'api_authorization': api_authorization_enc,   # já criptografado
         'api_database_url': api_database_url_enc,     # já criptografado
+        'arq_licenca': arq_licenca,
         'reginclusao': now_iso,
         'dataalteracao': now_iso,
     }
@@ -657,7 +676,7 @@ def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade=
         raise RuntimeError(f'Falha na conexão REST: {e}')
 
 
-def _registrar_tokens_por_cnpjs_rest(base_url, cnpjs, token, api_key=None):
+def _registrar_tokens_por_cnpjs_rest(base_url, cnpjs, token, api_key=None, arq_licenca=None):
     """Usa o endpoint REST do Neon/PostgREST para inserir/upsert em lote.
 
     Exige `api_key` (JWT service_role recomendado) passado como parâmetro ou em env.
@@ -679,7 +698,10 @@ def _registrar_tokens_por_cnpjs_rest(base_url, cnpjs, token, api_key=None):
     url = base_url.rstrip('/') + '/clientes'
     token = _ensure_token_complete(token)
     now_iso = datetime.now(timezone.utc).isoformat()
-    payload = [{'cnpj': c, 'token': token, 'ativo': True, 'reginclusao': now_iso, 'dataalteracao': now_iso} for c in cnpjs]
+    payload = [
+        {'cnpj': c, 'token': token, 'arq_licenca': arq_licenca, 'ativo': True, 'reginclusao': now_iso, 'dataalteracao': now_iso}
+        for c in cnpjs
+    ]
     
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=30)
@@ -690,8 +712,70 @@ def _registrar_tokens_por_cnpjs_rest(base_url, cnpjs, token, api_key=None):
         raise RuntimeError(f'Falha na conexão REST: {e}')
 
 
-def remover_cnpjs_do_db(cnpjs):
-    """Remove registros dos CNPJs informados da tabela `clientes`."""
+def gerar_activation_token(cnpjs, ttl_horas=24, gerado_por=''):
+    """Gera um token de ativação avulso para uso no fluxo "Ativar Online".
+
+    O token raw (43 chars URL-safe) é retornado UMA única vez para ser
+    exibido/enviado ao cliente. Apenas seu hash SHA-256 é armazenado no banco.
+
+    Parâmetros:
+    - cnpjs: lista de CNPJs (ou string com um CNPJ) para os quais o token é válido.
+    - ttl_horas: tempo de vida em horas (padrão 24h).
+    - gerado_por: identificação do operador (para auditoria).
+
+    Retorna: (raw_token: str, expira_em: datetime)
+    Lança RuntimeError se a inserção no banco falhar.
+    """
+    if isinstance(cnpjs, str):
+        cnpjs = [cnpjs]
+    if not cnpjs:
+        raise ValueError("Informe pelo menos um CNPJ para o token de ativação.")
+
+    raw_token  = secrets.token_urlsafe(32)      # 43 chars base64url
+    token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+    cnpj_str   = ','.join(c.strip() for c in cnpjs if c.strip())
+
+    from datetime import timezone as _tz, timedelta as _td
+    now_utc    = datetime.now(_tz.utc)
+    expira_em  = now_utc + _td(hours=ttl_horas)
+
+    # Determinar configuração do banco
+    db_config = None
+    if get_database_config:
+        db_config = get_database_config()
+    if not db_config:
+        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
+        if db_url:
+            db_config = {'type': 'sql', 'url': db_url}
+
+    if not db_config:
+        raise RuntimeError('Configuração de banco não encontrada. Configure DATABASE_URL ou use config.py.')
+
+    if db_config['type'] == 'sql':
+        try:
+            import sqlalchemy as _sa
+            engine = _sa.create_engine(db_config['url'], pool_pre_ping=True)
+            with engine.connect() as conn:
+                conn.execute(_sa.text("""
+                    INSERT INTO activation_tokens (cnpj, token_hash, criado_em, expira_em, gerado_por)
+                    VALUES (:cnpj, :hash, :criado, :expira, :gby)
+                """), {
+                    'cnpj': cnpj_str,
+                    'hash': token_hash,
+                    'criado': now_utc,
+                    'expira': expira_em,
+                    'gby': gerado_por or '',
+                })
+                conn.commit()
+        except Exception as e:
+            raise RuntimeError(f'Erro ao inserir activation_token no banco: {e}')
+    else:
+        raise RuntimeError('gerar_activation_token: suporta apenas db_config type=sql no momento.')
+
+    return raw_token, expira_em
+
+
+def remover_cnpjs_do_db(cnpjs):    """Remove registros dos CNPJs informados da tabela `clientes`."""
     if not cnpjs:
         return
     
@@ -850,9 +934,12 @@ if __name__ == "__main__":
                 payload.get('sql_banco', ''),
             )
 
+            conteudo_licenca = salvar_licenca(novo_token, caminho, payload_meta=payload)
+            print('Licença atualizada e salva em', caminho)
+
             # registrar/upsert no banco para CNPJs atuais
             try:
-                registrar_tokens_por_cnpjs(payload.get('cnpjs', []), novo_token)
+                registrar_tokens_por_cnpjs(payload.get('cnpjs', []), novo_token, arq_licenca=conteudo_licenca)
                 print('✓ CNPJs registrados no banco com sucesso.')
             except Exception as e:
                 print(f'⚠ Aviso: falha ao registrar token no banco: {e}')
@@ -866,9 +953,6 @@ if __name__ == "__main__":
                     print(f'✓ {len(removed)} CNPJ(s) removido(s) do banco.')
             except Exception as e:
                 print(f'⚠ Aviso: falha ao remover CNPJs no banco: {e}')
-
-            salvar_licenca(novo_token, caminho, payload_meta=payload)
-            print('Licença atualizada e salva em', caminho)
         else:
             cnpjs = _input_cnpjs_inicial()
             ids_celular = []
@@ -928,15 +1012,15 @@ if __name__ == "__main__":
                 'ids_celular': ids_celular,
                 'validade': validade,
             }
+            conteudo_licenca = salvar_licenca(token, caminho, payload_meta=meta)
+            print('Licença gerada e salva em', caminho)
+
             # salva arquivo e tenta registrar no banco
             try:
-                registrar_tokens_por_cnpjs(cnpjs, token)
+                registrar_tokens_por_cnpjs(cnpjs, token, arq_licenca=conteudo_licenca)
                 print('✓ CNPJs registrados no banco com sucesso.')
             except Exception as e:
                 print(f'⚠ Aviso: falha ao registrar token no banco: {e}')
-
-            salvar_licenca(token, caminho, payload_meta=meta)
-            print('Licença gerada e salva em', caminho)
     except KeyboardInterrupt:
         print('\nOperação cancelada.')
     except Exception as err:
