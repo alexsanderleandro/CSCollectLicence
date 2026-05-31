@@ -775,7 +775,8 @@ def gerar_activation_token(cnpjs, ttl_horas=24, gerado_por=''):
     return raw_token, expira_em
 
 
-def remover_cnpjs_do_db(cnpjs):    """Remove registros dos CNPJs informados da tabela `clientes`."""
+def remover_cnpjs_do_db(cnpjs):
+    """Remove registros dos CNPJs informados da tabela `clientes`."""
     if not cnpjs:
         return
     
