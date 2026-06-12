@@ -727,14 +727,37 @@ def gerar_activation_token(cnpjs, device_id='', ttl_horas=24, gerado_por=''):
     Retorna: (raw_token: str, expira_em: datetime)
     Lança RuntimeError se a inserção no banco falhar.
     """
-    if isinstance(cnpjs, str):
-        cnpjs = [cnpjs]
+    def _normalizar_lista(valor):
+        if valor is None:
+            return []
+        if isinstance(valor, str):
+            partes = valor.replace(';', ',').replace('\n', ',').split(',')
+        else:
+            partes = []
+            for item in valor:
+                partes.extend(str(item).replace(';', ',').replace('\n', ',').split(','))
+
+        vistos = set()
+        saida = []
+        for item in partes:
+            item = item.strip()
+            if item and item not in vistos:
+                vistos.add(item)
+                saida.append(item)
+        return saida
+
+    cnpjs = _normalizar_lista(cnpjs)
+    device_ids = _normalizar_lista(device_id)
     if not cnpjs:
         raise ValueError("Informe pelo menos um CNPJ para o token de ativação.")
 
+    if not device_ids:
+        raise ValueError("Informe pelo menos um Device ID para o token de ativacao.")
+
     raw_token  = secrets.token_urlsafe(32)      # 43 chars base64url
     token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
-    cnpj_str   = ','.join(c.strip() for c in cnpjs if c.strip())
+    cnpj_str   = ','.join(cnpjs)
+    device_id_str = ','.join(device_ids)
 
     from datetime import timezone as _tz, timedelta as _td
     now_utc    = datetime.now(_tz.utc)
@@ -758,6 +781,11 @@ def gerar_activation_token(cnpjs, device_id='', ttl_horas=24, gerado_por=''):
             engine = _sa.create_engine(db_config['url'], pool_pre_ping=True)
             with engine.connect() as conn:
                 conn.execute(_sa.text("""
+                    ALTER TABLE activation_tokens
+                        ALTER COLUMN cnpj TYPE TEXT,
+                        ALTER COLUMN device_id_autorizado TYPE TEXT
+                """))
+                conn.execute(_sa.text("""
                     INSERT INTO activation_tokens
                         (cnpj, token_hash, criado_em, expira_em, device_id_autorizado, gerado_por)
                     VALUES (:cnpj, :hash, :criado, :expira, :dev, :gby)
@@ -766,7 +794,7 @@ def gerar_activation_token(cnpjs, device_id='', ttl_horas=24, gerado_por=''):
                     'hash': token_hash,
                     'criado': now_utc,
                     'expira': expira_em,
-                    'dev': (device_id or '').strip(),
+                    'dev': device_id_str,
                     'gby': gerado_por or '',
                 })
                 conn.commit()
