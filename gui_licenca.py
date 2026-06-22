@@ -1,5 +1,7 @@
 import sys
 import os
+from typing import Optional, List, Dict, Any
+# pyrefly: ignore [missing-import]
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -19,7 +21,9 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
 )
+# pyrefly: ignore [missing-import]
 from PySide6.QtGui import QIcon
+# pyrefly: ignore [missing-import]
 from PySide6.QtCore import QDate
 
 from licenca import (
@@ -47,30 +51,34 @@ class LicencaWindow(QMainWindow):
     Fornece UI para adicionar múltiplos CNPJs e IDs de celular, definir validade,
     gerar tokens assinados e salvar/carregar o arquivo `licenca.key`.
     """
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle('Gerenciador de Licença')
-        base = os.path.dirname(__file__)
-        # prefere o arquivo .ico para o ícone da janela
-        icon_ico = os.path.join(base, 'assets', 'logo.ico')
-        icon_svg = os.path.join(base, 'assets', 'logo.svg')
-        icon_png = os.path.join(base, 'assets', 'logo.png')
-        icon_path = (
-            icon_ico
-            if os.path.exists(icon_ico)
-            else (icon_svg if os.path.exists(icon_svg) else (icon_png if os.path.exists(icon_png) else None))
-        )
-        if icon_path:
-            self.setWindowIcon(QIcon(icon_path))
+        self._setup_layout()
+        self.current_path = None
+        self.original_cnpjs_str = None  # Armazena a string original de CNPJs para detectar mudanças
 
+    def _find_asset(self, *names: str) -> Optional[str]:
+        """Busca por um asset entre os nomes fornecidos na pasta assets."""
+        base = os.path.dirname(__file__)
+        for name in names:
+            path = os.path.join(base, 'assets', name)
+            if os.path.exists(path):
+                return path
+        return None
+
+    def _setup_layout(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
 
         layout = QVBoxLayout(central)
 
-        # cabeçalho com o logo (usa o mesmo .ico gerado para o executável quando disponível)
+        # Configuração de Ícone e Cabeçalho
         self.header_label = QLabel()
-        logo_path = icon_ico if os.path.exists(icon_ico) else (icon_png if os.path.exists(icon_png) else None)
+        logo_path = self._find_asset('logo.ico', 'logo.png')
+        icon_path = self._find_asset('logo.ico', 'logo.svg', 'logo.png')
+        if icon_path:
+            self.setWindowIcon(QIcon(icon_path))
         if logo_path:
             self.header_label.setPixmap(QIcon(logo_path).pixmap(48, 48))
             self.header_label.setFixedHeight(56)
@@ -83,7 +91,22 @@ class LicencaWindow(QMainWindow):
         self.nome_cliente_edit.setPlaceholderText('Nome do cliente vinculado à licença')
         layout.addWidget(self.nome_cliente_edit)
 
-        # Linha com Servidor SQL e Nome do Banco (cada um: caption em cima, textbox embaixo)
+        # Linhas de entrada modularizadas
+        self._setup_sql_section(layout)
+        self._setup_api_section(layout)
+        self._setup_cnpj_section(layout)
+        self._setup_celular_section(layout)
+        self._setup_validade_section(layout)
+        self._setup_actions_section(layout)
+
+        # Rodapé / Versão
+        self.gerado_em_label = QLabel('')
+        layout.addWidget(self.gerado_em_label)
+
+        self.version_label = QLabel(f'Versão: {VERSION}')
+        layout.addWidget(self.version_label)
+
+    def _setup_sql_section(self, layout: QVBoxLayout) -> None:
         row_sql = QHBoxLayout()
 
         col_servidor = QVBoxLayout()
@@ -104,13 +127,13 @@ class LicencaWindow(QMainWindow):
 
         layout.addLayout(row_sql)
 
-        # API Authorization Token e Database URL
+    def _setup_api_section(self, layout: QVBoxLayout) -> None:
         row_api = QHBoxLayout()
 
         col_api_auth = QVBoxLayout()
-        col_api_auth.addWidget(QLabel('API Authorization Token (máx 100 caracteres):'))
+        col_api_auth.addWidget(QLabel('API Authorization Token (máx 1000 caracteres):'))
         self.api_authorization_edit = QLineEdit()
-        self.api_authorization_edit.setMaxLength(100)
+        self.api_authorization_edit.setMaxLength(1000)  # Aumentado de 100 para suportar tokens JWT longos
         self.api_authorization_edit.setPlaceholderText('Token de autenticação da API')
         col_api_auth.addWidget(self.api_authorization_edit)
         row_api.addLayout(col_api_auth)
@@ -125,7 +148,7 @@ class LicencaWindow(QMainWindow):
 
         layout.addLayout(row_api)
 
-        # CNPJs list
+    def _setup_cnpj_section(self, layout: QVBoxLayout) -> None:
         self.cnpj_list = QListWidget()
         layout.addWidget(QLabel('CNPJs liberados (mínimo 1):'))
         layout.addWidget(self.cnpj_list)
@@ -139,7 +162,7 @@ class LicencaWindow(QMainWindow):
         btn_row.addWidget(btn_remove)
         layout.addLayout(btn_row)
 
-        # IDs de celular
+    def _setup_celular_section(self, layout: QVBoxLayout) -> None:
         self.id_celular_list = QListWidget()
         layout.addWidget(QLabel('IDs de celular liberados (mínimo 1):'))
         layout.addWidget(self.id_celular_list)
@@ -153,13 +176,12 @@ class LicencaWindow(QMainWindow):
         btn_row2.addWidget(btn_remove_cel)
         layout.addLayout(btn_row2)
 
-        # validade (date picker) + opção 'sem validade'
+    def _setup_validade_section(self, layout: QVBoxLayout) -> None:
         hd2 = QHBoxLayout()
         hd2.addWidget(QLabel('Validade:'))
         self.validade = QDateEdit()
         self.validade.setCalendarPopup(True)
         self.validade.setDisplayFormat('yyyy-MM-dd')
-        # default to today
         self.validade.setDate(QDate.currentDate())
         hd2.addWidget(self.validade)
         self.sem_validade_cb = QCheckBox('Sem validade')
@@ -167,12 +189,11 @@ class LicencaWindow(QMainWindow):
         hd2.addWidget(self.sem_validade_cb)
         layout.addLayout(hd2)
 
-        # checkbox para campo ativo do banco
         self.ativa_cb = QCheckBox('Ativa (salvar como ativa no banco de dados)')
-        self.ativa_cb.setChecked(True)  # padrão: ativa
+        self.ativa_cb.setChecked(True)
         layout.addWidget(self.ativa_cb)
 
-        # actions
+    def _setup_actions_section(self, layout: QVBoxLayout) -> None:
         actions = QHBoxLayout()
         btn_new = QPushButton('Novo')
         btn_new.clicked.connect(self.new_license)
@@ -184,12 +205,10 @@ class LicencaWindow(QMainWindow):
         actions.addWidget(btn_load)
         actions.addWidget(btn_save)
         
-        # Botão de configuração da API
         btn_config_db = QPushButton('⚙ Config API')
         btn_config_db.clicked.connect(self.configure_api)
         actions.addWidget(btn_config_db)
 
-        # Botão: gerar token de ativação avulso (fluxo "Ativar Online" sem .key)
         btn_gen_token = QPushButton('🔑 Gerar Token')
         btn_gen_token.setToolTip('Gera token de ativação de uso único para o cliente ativar sem arquivo .key')
         btn_gen_token.clicked.connect(self.gerar_token_ativacao)
@@ -202,8 +221,8 @@ class LicencaWindow(QMainWindow):
         layout.addWidget(self.gerado_em_label)
 
         # versão do app
-        self.version_label = QLabel(f'Versão: {VERSION}')
-        layout.addWidget(self.version_label)
+        #self.version_label = QLabel(f'Versão: {VERSION}')
+        #layout.addWidget(self.version_label)
 
         self.current_path = None
         self.original_cnpjs_str = None  # Armazena a string original de CNPJs para detectar mudanças
@@ -224,7 +243,7 @@ class LicencaWindow(QMainWindow):
                     return
                 self.cnpj_list.addItem(clean)
 
-    def configure_api(self):
+    def configure_api(self) -> None:
         """Abre diálogo para configurar a URL da API, token de autorização e URL do banco."""
         if not get_api_config:
             QMessageBox.warning(self, 'Erro', 'Módulo config.py não disponível.')
@@ -267,6 +286,13 @@ class LicencaWindow(QMainWindow):
             api_token = api_token_edit.text().strip()
             db_url = db_url_edit.text().strip()
 
+            if not api_url:
+                QMessageBox.warning(self, 'Atenção', 'A URL da API não pode ser vazia.')
+                return
+            if not api_url.startswith(('http://', 'https://')):
+                QMessageBox.warning(self, 'Atenção', 'A URL da API deve começar com http:// ou https://')
+                return
+
             if not api_token:
                 QMessageBox.warning(self, 'Atenção', 'O token de autorização não pode ser vazio.')
                 return
@@ -299,7 +325,7 @@ class LicencaWindow(QMainWindow):
         if sel >= 0:
             self.id_celular_list.takeItem(sel)
 
-    def load_license(self):
+    def load_license(self) -> None:
         """Carrega um arquivo de licença (`.key`), valida e popula os campos da GUI.
 
         Em caso de erro exibe uma mensagem para o usuário.
@@ -312,27 +338,13 @@ class LicencaWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, 'Erro', f'Falha ao carregar: {e}')
             return
-        # populate fields
-        # nome do cliente, se presente
-        nome = payload.get('nome_cliente', '')
-        if getattr(self, 'nome_cliente_edit', None):
-            self.nome_cliente_edit.setText(nome)
-
-        # servidor SQL e banco, se presentes
-        sql_servidor = payload.get('sql_servidor', '')
-        sql_banco = payload.get('sql_banco', '')
-        if getattr(self, 'sql_servidor_edit', None):
-            self.sql_servidor_edit.setText(sql_servidor)
-        if getattr(self, 'sql_banco_edit', None):
-            self.sql_banco_edit.setText(sql_banco)
-
-        # API Authorization e Database URL, se presentes
-        api_auth = payload.get('api_authorization', '')
-        api_db_url = payload.get('api_database_url', '')
-        if getattr(self, 'api_authorization_edit', None):
-            self.api_authorization_edit.setText(api_auth)
-        if getattr(self, 'api_database_url_edit', None):
-            self.api_database_url_edit.setText(api_db_url)
+        
+        # popular campos de forma direta, removendo getattr redundantes
+        self.nome_cliente_edit.setText(payload.get('nome_cliente', ''))
+        self.sql_servidor_edit.setText(payload.get('sql_servidor', ''))
+        self.sql_banco_edit.setText(payload.get('sql_banco', ''))
+        self.api_authorization_edit.setText(payload.get('api_authorization', ''))
+        self.api_database_url_edit.setText(payload.get('api_database_url', ''))
 
         self.cnpj_list.clear()
         cnpjs_carregados = payload.get('cnpjs', [])
@@ -355,7 +367,6 @@ class LicencaWindow(QMainWindow):
                 if d.isValid():
                     self.validade.setDate(d)
                 else:
-                    # fallback: set text as is by attempting parse with Qt
                     self.validade.setDate(QDate.currentDate())
             except Exception:
                 self.validade.setDate(QDate.currentDate())
@@ -368,7 +379,7 @@ class LicencaWindow(QMainWindow):
         self.current_path = path
         QMessageBox.information(self, 'OK', 'Licença carregada com sucesso.')
 
-    def save_license(self):
+    def save_license(self) -> None:
         """Gera o token de licença a partir dos campos e salva em arquivo.
 
         Valida que exista pelo menos um CNPJ e um ID de celular antes de gerar.
@@ -376,53 +387,28 @@ class LicencaWindow(QMainWindow):
         # collect
         cnpjs = [self.cnpj_list.item(i).text() for i in range(self.cnpj_list.count())]
         ids_celular = [self.id_celular_list.item(i).text() for i in range(self.id_celular_list.count())]
-        if getattr(self, 'sem_validade_cb', None) and self.sem_validade_cb.isChecked():
-            validade = ''
-        else:
-            # QDateEdit -> string in yyyy-MM-dd
-            validade = self.validade.date().toString('yyyy-MM-dd')
+        validade = '' if self.sem_validade_cb.isChecked() else self.validade.date().toString('yyyy-MM-dd')
 
-        if not cnpjs:
-            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar pelo menos um CNPJ.')
-            return
-        if not ids_celular:
-            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar pelo menos um ID de celular.')
-            return
+        nome_cliente = self.nome_cliente_edit.text().strip()
+        sql_servidor = self.sql_servidor_edit.text().strip()
+        sql_banco = self.sql_banco_edit.text().strip()
+        api_authorization = self.api_authorization_edit.text().strip()
+        api_database_url = self.api_database_url_edit.text().strip()
 
-        # nome do cliente obrigatório
-        nome_cliente = ''
-        if getattr(self, 'nome_cliente_edit', None):
-            nome_cliente = self.nome_cliente_edit.text().strip()
-        if not nome_cliente:
-            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar o nome do cliente (máx 30 caracteres).')
-            return
-        if len(nome_cliente) > 30:
-            QMessageBox.warning(self, 'Atenção', 'O nome do cliente deve ter no máximo 30 caracteres.')
-            return
-
-        # servidor SQL e banco (mesma lógica)
-        sql_servidor = ''
-        sql_banco = ''
-        if getattr(self, 'sql_servidor_edit', None):
-            sql_servidor = self.sql_servidor_edit.text().strip()
-        if getattr(self, 'sql_banco_edit', None):
-            sql_banco = self.sql_banco_edit.text().strip()
-        if not sql_servidor:
-            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar o nome do servidor SQL (máx 30 caracteres).')
-            return
-        if len(sql_servidor) > 30:
-            QMessageBox.warning(self, 'Atenção', 'O nome do servidor SQL deve ter no máximo 30 caracteres.')
-            return
-        if not sql_banco:
-            QMessageBox.warning(self, 'Atenção', 'É obrigatório informar o nome do banco de dados (máx 30 caracteres).')
-            return
-        if len(sql_banco) > 30:
-            QMessageBox.warning(self, 'Atenção', 'O nome do banco de dados deve ter no máximo 30 caracteres.')
+        # Valida os dados gerando a licença antes de solicitar o caminho do arquivo (Item 18)
+        try:
+            lic_token = gerar_licenca(
+                cnpjs, ids_celular, validade or '9999-12-31',
+                nome_cliente, sql_servidor, sql_banco,
+                api_authorization=api_authorization,
+                api_database_url=api_database_url
+            )
+        except ValueError as e:
+            QMessageBox.warning(self, 'Dados inválidos', str(e))
             return
 
         path = self.current_path
         if not path:
-            # cria nome padrão do arquivo usando o nome do cliente
             safe = ''.join(ch for ch in nome_cliente if (ch.isalnum() or ch in (' ', '_', '-'))).strip().replace(' ', '_')
             if not safe:
                 safe = 'cliente'
@@ -430,7 +416,7 @@ class LicencaWindow(QMainWindow):
             path, _ = QFileDialog.getSaveFileName(self, 'Salvar licença', default_name, 'License files (*.key);;All files (*)')
             if not path:
                 return
-        # confirmação antes de sobrescrever
+
         if os.path.exists(path):
             resp = QMessageBox.question(self, 'Confirmar', f'O arquivo {path} já existe. Sobrescrever?')
             if resp != QMessageBox.Yes:
@@ -455,22 +441,7 @@ class LicencaWindow(QMainWindow):
                 if db_config and db_config.get('type') == 'sql':
                     api_database_url_cfg = db_config.get('url')
 
-            # Coleta os novos campos de API
-            api_authorization = ''
-            api_database_url = ''
-            if getattr(self, 'api_authorization_edit', None):
-                api_authorization = self.api_authorization_edit.text().strip()
-            if getattr(self, 'api_database_url_edit', None):
-                api_database_url = self.api_database_url_edit.text().strip()
-
-            # Gera token de licença e salva no arquivo .key
-            # NOTA: api_authorization e api_database_url NÃO são gravados no .key;
-            # serão armazenados criptografados em repouso no banco Neon (tabela clientes).
-            lic_token = gerar_licenca(cnpjs, ids_celular, validade or '9999-12-31',
-                                      nome_cliente, sql_servidor, sql_banco,
-                                      api_authorization=api_authorization,
-                                      api_database_url=api_database_url)
-
+            # Salva o arquivo .key (Item 16: api_authorization e api_database_url não vão para o .key)
             meta = {
                 'cnpjs': cnpjs,
                 'ids_celular': ids_celular,
@@ -479,8 +450,6 @@ class LicencaWindow(QMainWindow):
                 'nome_cliente': nome_cliente,
                 'sql_servidor': sql_servidor,
                 'sql_banco': sql_banco,
-                'api_authorization': api_authorization,
-                'api_database_url': api_database_url,
             }
             conteudo_licenca = salvar_licenca(lic_token, path, payload_meta=meta)
             
@@ -491,16 +460,15 @@ class LicencaWindow(QMainWindow):
                 ids_str = ','.join(ids_celular)
                 ativa = self.ativa_cb.isChecked()
                 
-                # Se a string de CNPJs mudou, deleta o registro antigo primeiro
+                # Se a string de CNPJs mudou, deleta o registro antigo primeiro (Item 17)
                 if self.original_cnpjs_str and self.original_cnpjs_str != cnpjs_str:
                     from licenca import deletar_registro_por_cnpjs
                     try:
                         deletar_registro_por_cnpjs(self.original_cnpjs_str)
-                    except Exception:
-                        pass  # Ignora erro ao deletar (pode não existir mais)
+                    except Exception as e:
+                        import logging
+                        logging.warning(f"[GUI] Falha ao deletar registro antigo ({self.original_cnpjs_str}): {e}")
                 
-                # api_authorization e api_database_url são criptografados em repouso
-                # dentro de registrar_tokens_por_cnpjs_single antes de persistir no banco.
                 registrar_tokens_por_cnpjs_single(
                     cnpjs_str, ids_str, lic_token, validade, ativa,
                     nome_cliente, sql_servidor, sql_banco,
@@ -509,9 +477,7 @@ class LicencaWindow(QMainWindow):
                     arq_licenca=conteudo_licenca,
                 )
                 
-                # Atualiza a string original para refletir o novo estado
                 self.original_cnpjs_str = cnpjs_str
-                
                 msg = f'Licença salva em: {path}\n\n✓ CNPJs registrados no banco com sucesso.'
             except Exception as e:
                 msg = f'Licença salva em: {path}\n\n⚠ Aviso: falha ao registrar no banco: {e}'
@@ -521,20 +487,8 @@ class LicencaWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, 'Erro', f'Falha ao salvar: {e}')
 
-    def generate_token_only(self):
-        """Gera o token e o exibe em um diálogo para cópia/colagem.
-
-        Não salva o arquivo; útil para enviar o token por outros canais.
-        """
-        # removido: geração direta de token via botão (fluxo mantido no salvar)
-        return
-
-    def gerar_token_ativacao(self):
-        """Gera token avulso de ativação para o cliente usar o fluxo 'Ativar Online'.
-
-        O token é de uso único com TTL configurável e armazenado como hash SHA-256
-        na tabela `activation_tokens` do Neon. O raw token é exibido UMA vez.
-        """
+    def gerar_token_ativacao(self) -> None:
+        """Gera token avulso de ativação para o cliente usar o fluxo 'Ativar Online'."""
         # Coletar CNPJs da lista
         cnpjs = [self.cnpj_list.item(i).text() for i in range(self.cnpj_list.count())]
         if not cnpjs:
@@ -592,34 +546,37 @@ class LicencaWindow(QMainWindow):
             f'Expira em: {expira_str}\n\n'
             f'⚠ Este token é exibido apenas uma vez e não pode ser recuperado.'
         )
-        # Copiar para clipboard automaticamente
+        
+        # Copiar para clipboard automaticamente com aviso de falha (Item 24)
         try:
+            # pyrefly: ignore [missing-import]
             from PySide6.QtGui import QClipboard
+            # pyrefly: ignore [missing-import]
             from PySide6.QtWidgets import QApplication as _QApp
             _QApp.clipboard().setText(raw_token)
-            msg += '\n\n(Copiado para a área de transferência)'
-        except Exception:
-            pass
+            msg += '\n\n✓ Copiado para a área de transferência'
+        except Exception as e:
+            import logging
+            logging.warning(f"[GUI] Falha ao copiar para o clipboard: {e}")
+            msg += '\n\n⚠ Não foi possível copiar automaticamente — copie manualmente.'
         QMessageBox.information(self, 'Token de Ativação', msg)
 
-    def new_license(self):
+    def new_license(self) -> None:
         """Limpa todos os campos da GUI para criar uma nova licença do zero."""
-        # limpa campos para criar nova licença
         self.cnpj_list.clear()
         self.id_celular_list.clear()
         self.sem_validade_cb.setChecked(False)
         self.validade.setEnabled(True)
         self.validade.setDate(QDate.currentDate())
-        self.ativa_cb.setChecked(True)  # padrão: ativa
+        self.ativa_cb.setChecked(True)
         self.gerado_em_label.setText('')
-        if getattr(self, 'nome_cliente_edit', None):
-            self.nome_cliente_edit.setText('')
-        if getattr(self, 'sql_servidor_edit', None):
-            self.sql_servidor_edit.setText('')
-        if getattr(self, 'sql_banco_edit', None):
-            self.sql_banco_edit.setText('')
+        self.nome_cliente_edit.setText('')
+        self.sql_servidor_edit.setText('')
+        self.sql_banco_edit.setText('')
+        self.api_authorization_edit.setText('')
+        self.api_database_url_edit.setText('')
         self.current_path = None
-        self.original_cnpjs_str = None  # Reseta a string original
+        self.original_cnpjs_str = None
         QMessageBox.information(self, 'Novo', 'Criando nova licença — preencha os campos e clique em Salvar.')
 
 

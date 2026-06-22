@@ -7,6 +7,9 @@ import secrets
 import copy
 import urllib.parse
 
+import functools
+import logging
+
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     _AESGCM_AVAILABLE = True
@@ -14,6 +17,14 @@ except ImportError:
     _AESGCM_AVAILABLE = False
 try:
     import requests
+except ImportError:
+    requests = None
+    import warnings
+    warnings.warn(
+        "Biblioteca 'requests' não instalada. Funcionalidades REST não estarão disponíveis.",
+        ImportWarning,
+        stacklevel=1
+    )
 except Exception:
     requests = None
 
@@ -22,6 +33,11 @@ try:
 except ImportError:
     get_database_config = None
 from datetime import datetime, date, timezone
+from typing import Optional, List, Tuple, Dict, Any
+
+# Logger para avisos e depuração
+_logger = logging.getLogger("licenca")
+
 
 
 # Tenta carregar variáveis de ambiente a partir de um arquivo .env, se disponível
@@ -55,6 +71,7 @@ if MASTER_KEY is None:
 MASTER_KEY_BYTES = MASTER_KEY.encode("utf-8")
 
 
+@functools.lru_cache(maxsize=1)
 def _derive_encryption_key() -> bytes:
     """Deriva chave AES-256 a partir de MASTER_KEY usando PBKDF2-HMAC-SHA256.
 
@@ -145,7 +162,7 @@ def _ensure_token_complete(token: str) -> str:
     return f"{token}.{_b64u_encode(assinatura)}"
 
 
-def serializar_licenca(token, payload_meta=None):
+def serializar_licenca(token: str, payload_meta: Optional[Dict[str, Any]] = None) -> str:
     """Retorna o conteúdo textual que será gravado no arquivo de licença."""
     token = _ensure_token_complete(token)
 
@@ -153,6 +170,7 @@ def serializar_licenca(token, payload_meta=None):
         # SEGURANÇA (R2): api_authorization e api_database_url NÃO são gravados no
         # arquivo .key para evitar exposição de credenciais em texto puro.
         # Esses campos são obtidos em runtime via /validar-licenca (HTTPS + AES no banco).
+        CAMPOS_SENSIVEIS = ('api_authorization', 'api_database_url')
         out = {
             "cnpjs": payload_meta.get("cnpjs") or payload_meta.get("cnpj") or [],
             "ids": payload_meta.get("ids") or payload_meta.get("ids_celular") or [],
@@ -163,12 +181,22 @@ def serializar_licenca(token, payload_meta=None):
             "sql_servidor": payload_meta.get("sql_servidor") or "",
             "sql_banco": payload_meta.get("sql_banco") or "",
         }
+        out = {k: v for k, v in out.items() if k not in CAMPOS_SENSIVEIS}
         return json.dumps(out, ensure_ascii=False, indent=2)
 
     return token
 
 
-def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco, api_authorization="", api_database_url=""):
+def gerar_licenca(
+    cnpjs: List[str],
+    ids_celular: List[str],
+    validade: str,
+    nome_cliente: str,
+    sql_servidor: str,
+    sql_banco: str,
+    api_authorization: str = "",
+    api_database_url: str = ""
+) -> str:
     """Gera um token de licença.
 
     O token é uma string compacta e assinada que contém o payload JSON
@@ -215,6 +243,16 @@ def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_
     if len(sql_banco) > 30:
         raise ValueError("O nome do banco de dados deve ter no máximo 30 caracteres.")
 
+    # Valida formato da validade se fornecido
+    if validade:
+        try:
+            if 'T' in validade or validade.endswith('Z'):
+                datetime.fromisoformat(validade.replace('Z', '+00:00'))
+            else:
+                date.fromisoformat(validade)
+        except ValueError:
+            raise ValueError(f"Formato de validade inválido: '{validade}'. Use YYYY-MM-DD ou formato ISO 8601.")
+
     # 2) Monta o payload com os dados informados e metadados
     # registrar hora local com offset correto (ex: 2026-04-01T12:34:56+03:00)
     payload = {
@@ -243,7 +281,7 @@ def gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_
     return token
 
 
-def verificar_licenca(token, validar_validade=True):
+def verificar_licenca(token: str, validar_validade: bool = True) -> Dict[str, Any]:
     """Verifica e valida um token de licença.
 
     Retorna o payload (dict) decodificado se a assinatura for válida e,
@@ -253,49 +291,45 @@ def verificar_licenca(token, validar_validade=True):
     validade expirada. Pode lançar outras exceções de I/O/parse se houverem
     problemas ao decodificar o payload.
     """
-    try:
-        parts = token.split('.')
-        if len(parts) != 2:
-            raise ValueError("Formato de token inválido")
+    parts = token.split('.')
+    if len(parts) != 2:
+        raise ValueError("Formato de token inválido")
 
-        dados_b64, sig_b64 = parts
-        dados = _b64u_decode(dados_b64)
-        assinatura_recebida = _b64u_decode(sig_b64)
+    dados_b64, sig_b64 = parts
+    dados = _b64u_decode(dados_b64)
+    assinatura_recebida = _b64u_decode(sig_b64)
 
-        assinatura_esperada = hmac.new(MASTER_KEY_BYTES, dados, hashlib.sha256).digest()
+    assinatura_esperada = hmac.new(MASTER_KEY_BYTES, dados, hashlib.sha256).digest()
 
-        if not secrets.compare_digest(assinatura_recebida, assinatura_esperada):
-            raise ValueError("Assinatura inválida")
+    if not secrets.compare_digest(assinatura_recebida, assinatura_esperada):
+        raise ValueError("Assinatura inválida")
 
-        payload = json.loads(dados.decode('utf-8'))
+    payload = json.loads(dados.decode('utf-8'))
 
-        if validar_validade and payload.get('validade'):
-            val = payload['validade']
-            try:
-                # Se contém 'T' ou termina com 'Z', trata como datetime
-                if isinstance(val, str) and ("T" in val or val.endswith('Z')):
-                    v = val.replace('Z', '+00:00')
-                    validade_dt = datetime.fromisoformat(v)
-                    if validade_dt.tzinfo is None:
-                        validade_dt = validade_dt.replace(tzinfo=timezone.utc)
-                    hoje = datetime.now(timezone.utc)
-                    if validade_dt < hoje:
-                        raise ValueError("Licença expirada")
-                else:
-                    # Assume formato YYYY-MM-DD
-                    validade_date = date.fromisoformat(val)
-                    if validade_date < date.today():
-                        raise ValueError("Licença expirada")
-            except ValueError:
-                raise ValueError("Formato de validade desconhecido ou licença expirada")
+    if validar_validade and payload.get('validade'):
+        val = payload['validade']
+        try:
+            # Se contém 'T' ou termina com 'Z', trata como datetime
+            if isinstance(val, str) and ("T" in val or val.endswith('Z')):
+                v = val.replace('Z', '+00:00')
+                validade_dt = datetime.fromisoformat(v)
+                if validade_dt.tzinfo is None:
+                    validade_dt = validade_dt.replace(tzinfo=timezone.utc)
+                hoje = datetime.now(timezone.utc)
+                if validade_dt < hoje:
+                    raise ValueError("Licença expirada")
+            else:
+                # Assume formato YYYY-MM-DD
+                validade_date = date.fromisoformat(val)
+                if validade_date < date.today():
+                    raise ValueError("Licença expirada")
+        except ValueError:
+            raise ValueError("Formato de validade desconhecido ou licença expirada")
 
-        return payload
-
-    except Exception as e:
-        raise
+    return payload
 
 
-def salvar_licenca(token, caminho="licenca.key", payload_meta=None):
+def salvar_licenca(token: str, caminho: str = "licenca.key", payload_meta: Optional[Dict[str, Any]] = None) -> str:
     """Salva a licença no arquivo especificado.
 
     Comportamentos:
@@ -318,7 +352,7 @@ def salvar_licenca(token, caminho="licenca.key", payload_meta=None):
     return conteudo
 
 
-def carregar_licenca_de_arquivo(caminho="licenca.key"):
+def carregar_licenca_de_arquivo(caminho: str = "licenca.key") -> Tuple[Dict[str, Any], str]:
     """Lê token (ou JSON de manager) de `caminho`, verifica e retorna o payload (dict) e o token.
 
     Suporta dois formatos de arquivo:
@@ -326,7 +360,8 @@ def carregar_licenca_de_arquivo(caminho="licenca.key"):
     - JSON contendo pelo menos a chave `token` (ex.: manager key).
     """
     try:
-        raw = open(caminho, "rb").read()
+        with open(caminho, "rb") as f:
+            raw = f.read()
     except FileNotFoundError:
         raise FileNotFoundError(f"Arquivo não encontrado: {caminho}")
 
@@ -378,9 +413,10 @@ def carregar_licenca_de_arquivo(caminho="licenca.key"):
                 for k, v in payload_verificado.items():
                     if not payload.get(k):
                         payload[k] = v
-            except Exception:
+            except Exception as e:
                 # Token em formato externo (ex: CSCollect Manager) — tenta decodificar
                 # o payload da primeira parte do token sem verificar assinatura
+                _logger.warning(f"Assinatura do token inválida ou erro na verificação, tentando fallback: {e}")
                 try:
                     parte_payload = token.split('.')[0]
                     import base64 as _b64
@@ -401,32 +437,44 @@ def carregar_licenca_de_arquivo(caminho="licenca.key"):
     return payload, token
 
 
-def _get_db_dsn_from_env():
-    """Constrói DSN a partir de variáveis de ambiente ou config JSON.
-
-    Aceita `DATABASE_URL` (preferencial) ou as variáveis NEON_HOST/NEON_DB/NEON_USER/NEON_PASSWORD/NEON_PORT.
-    Se não encontrar em env, tenta carregar do arquivo JSON local.
+def _resolve_db_config() -> dict:
+    """Resolve a configuração do banco a partir de config.py ou variáveis de ambiente.
+    
+    Raises:
+        RuntimeError: Se nenhuma configuração for encontrada.
     """
-    url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
-    if url:
-        return url
+    config = get_database_config() if get_database_config else None
+    if not config:
+        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
+        rest_url = os.environ.get('NEON_REST_URL') or os.environ.get('NEON_REST_API_URL')
+        if db_url:
+            config = {'type': 'sql', 'url': db_url}
+        elif rest_url:
+            config = {'type': 'rest', 'url': rest_url, 'api_key': os.environ.get('NEON_API_KEY')}
+        else:
+            # Fallback para parâmetros individuais NEON_*
+            host = os.environ.get('NEON_HOST')
+            db = os.environ.get('NEON_DB') or os.environ.get('NEON_DATABASE')
+            user = os.environ.get('NEON_USER')
+            password = os.environ.get('NEON_PASSWORD')
+            port = os.environ.get('NEON_PORT') or os.environ.get('NEON_PORTA') or '5432'
+            if host and db and user and password:
+                dsn = f"host={host} port={port} dbname={db} user={user} password={password}"
+                config = {'type': 'sql', 'url': dsn}
+    if not config:
+        raise RuntimeError('Configuração de banco não encontrada. Configure DATABASE_URL ou use config.py.')
+    return config
 
-    # Tenta carregar do JSON
-    if get_database_config:
-        db_config = get_database_config()
-        if db_config and db_config.get('type') == 'sql':
-            return db_config.get('url')
 
-    host = os.environ.get('NEON_HOST')
-    db = os.environ.get('NEON_DB') or os.environ.get('NEON_DATABASE')
-    user = os.environ.get('NEON_USER')
-    password = os.environ.get('NEON_PASSWORD')
-    port = os.environ.get('NEON_PORT') or os.environ.get('NEON_PORTA') or '5432'
-
-    if not (host and db and user and password):
-        return None
-
-    return f"host={host} port={port} dbname={db} user={user} password={password}"
+def _get_db_dsn_from_env() -> Optional[str]:
+    """Constrói DSN a partir da configuração unificada."""
+    try:
+        config = _resolve_db_config()
+        if config.get('type') == 'sql':
+            return config.get('url')
+    except Exception:
+        pass
+    return None
 
 
 def _exec_db_statements(statements):
@@ -480,7 +528,7 @@ def _exec_db_statements(statements):
                 pass
 
 
-def registrar_tokens_por_cnpjs(cnpjs, token, arq_licenca=None):
+def registrar_tokens_por_cnpjs(cnpjs: List[str], token: str, arq_licenca: Optional[str] = None) -> Any:
     """Insere/atualiza o `token` para cada CNPJ na tabela `clientes`.
 
     Usa INSERT ... ON CONFLICT (cnpj) DO UPDATE SET token = EXCLUDED.token;
@@ -489,24 +537,7 @@ def registrar_tokens_por_cnpjs(cnpjs, token, arq_licenca=None):
     if not cnpjs:
         return
     
-    # Tenta obter configuração (env ou JSON)
-    db_config = None
-    if get_database_config:
-        db_config = get_database_config()
-    
-    # Fallback: tenta env direto se config.py não disponível
-    if not db_config:
-        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
-        rest_url = os.environ.get('NEON_REST_URL') or os.environ.get('NEON_REST_API_URL')
-        if db_url:
-            db_config = {'type': 'sql', 'url': db_url}
-        elif rest_url:
-            db_config = {'type': 'rest', 'url': rest_url, 'api_key': os.environ.get('NEON_API_KEY')}
-    
-    if not db_config:
-        raise RuntimeError('Configuração de banco não encontrada. Execute config.py ou defina DATABASE_URL.')
-    
-    # garante que o token contém assinatura (payload.signature)
+    db_config = _resolve_db_config()
     token = _ensure_token_complete(token)
 
     # Executa conforme o tipo
@@ -526,7 +557,7 @@ def registrar_tokens_por_cnpjs(cnpjs, token, arq_licenca=None):
         raise RuntimeError('Tipo de configuração desconhecido.')
 
 
-def deletar_registro_por_cnpjs(cnpjs_str):
+def deletar_registro_por_cnpjs(cnpjs_str: str) -> Any:
     """Deleta um registro da tabela `clientes` pela chave primária cnpj.
     
     Parâmetros:
@@ -535,19 +566,7 @@ def deletar_registro_por_cnpjs(cnpjs_str):
     if not cnpjs_str:
         return
     
-    # Tenta obter configuração (env ou JSON)
-    db_config = None
-    if get_database_config:
-        db_config = get_database_config()
-    
-    # Fallback: tenta env direto
-    if not db_config:
-        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
-        if db_url:
-            db_config = {'type': 'sql', 'url': db_url}
-    
-    if not db_config:
-        raise RuntimeError('Configuração de banco não encontrada. Execute config.py ou defina DATABASE_URL.')
+    db_config = _resolve_db_config()
     
     # Executa DELETE
     q = "DELETE FROM clientes WHERE cnpj = %s;"
@@ -555,43 +574,24 @@ def deletar_registro_por_cnpjs(cnpjs_str):
     return _exec_db_statements(statements)
 
 
-def registrar_tokens_por_cnpjs_single(cnpjs_str, ids_str, token, validade='', ativa=True, nome_cliente='', sql_servidor='', sql_banco='', api_authorization='', api_database_url='', arq_licenca=None):
-    """Insere/atualiza um ÚNICO registro na tabela `clientes` com CNPJs e IDs separados por vírgula.
-    
-    Parâmetros:
-    - cnpjs_str: string com CNPJs separados por vírgula (ex: "12345678000199,98765432000188")
-    - ids_str: string com IDs de celular separados por vírgula
-    - token: token assinado
-    - validade: data de validade (YYYY-MM-DD) ou string vazia para sem validade
-    - ativa: boolean indicando se a licença está ativa (padrão: True)
-    - nome_cliente: nome do cliente vinculado à licença (máx 30 caracteres)
-    - sql_servidor: nome do servidor SQL (máx 30 caracteres)
-    - sql_banco: nome do banco de dados (máx 30 caracteres)
-    - api_authorization: token Bearer da API do cliente (será criptografado em repouso no banco)
-    - api_database_url: connection string do banco do cliente (será criptografada em repouso no banco)
-    
-    Tabela esperada: clientes (cnpj VARCHAR PRIMARY KEY, idcelular TEXT, token TEXT, validade VARCHAR,
-    ativo BOOLEAN, nome_cliente VARCHAR, sql_servidor VARCHAR, sql_banco VARCHAR,
-    api_authorization TEXT, api_database_url TEXT, arq_licenca TEXT)
-    """
+def registrar_tokens_por_cnpjs_single(
+    cnpjs_str: str,
+    ids_str: str,
+    token: str,
+    validade: str = '',
+    ativa: bool = True,
+    nome_cliente: str = '',
+    sql_servidor: str = '',
+    sql_banco: str = '',
+    api_authorization: str = '',
+    api_database_url: str = '',
+    arq_licenca: Optional[str] = None
+) -> Any:
+    """Insere/atualiza um ÚNICO registro na tabela `clientes` com CNPJs e IDs separados por vírgula."""
     if not cnpjs_str:
         return
     
-    # Tenta obter configuração (env ou JSON)
-    db_config = None
-    if get_database_config:
-        db_config = get_database_config()
-    
-    # Fallback: tenta env direto
-    if not db_config:
-        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
-        if db_url:
-            db_config = {'type': 'sql', 'url': db_url}
-    
-    if not db_config:
-        raise RuntimeError('Configuração de banco não encontrada. Execute config.py ou defina DATABASE_URL.')
-    
-    # garante que o token contém assinatura (payload.signature)
+    db_config = _resolve_db_config()
     token = _ensure_token_complete(token)
 
     # Criptografa em repouso os campos sensíveis ANTES de enviar ao banco
@@ -764,27 +764,13 @@ def gerar_activation_token(cnpjs, device_id='', ttl_horas=24, gerado_por=''):
     expira_em  = now_utc + _td(hours=ttl_horas)
 
     # Determinar configuração do banco
-    db_config = None
-    if get_database_config:
-        db_config = get_database_config()
-    if not db_config:
-        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
-        if db_url:
-            db_config = {'type': 'sql', 'url': db_url}
-
-    if not db_config:
-        raise RuntimeError('Configuração de banco não encontrada. Configure DATABASE_URL ou use config.py.')
+    db_config = _resolve_db_config()
 
     if db_config['type'] == 'sql':
         try:
             import sqlalchemy as _sa
             engine = _sa.create_engine(db_config['url'], pool_pre_ping=True)
             with engine.connect() as conn:
-                conn.execute(_sa.text("""
-                    ALTER TABLE activation_tokens
-                        ALTER COLUMN cnpj TYPE TEXT,
-                        ALTER COLUMN device_id_autorizado TYPE TEXT
-                """))
                 conn.execute(_sa.text("""
                     INSERT INTO activation_tokens
                         (cnpj, token_hash, criado_em, expira_em, device_id_autorizado, gerado_por)
@@ -806,27 +792,12 @@ def gerar_activation_token(cnpjs, device_id='', ttl_horas=24, gerado_por=''):
     return raw_token, expira_em
 
 
-def remover_cnpjs_do_db(cnpjs):
+def remover_cnpjs_do_db(cnpjs: List[str]) -> Any:
     """Remove registros dos CNPJs informados da tabela `clientes`."""
     if not cnpjs:
         return
     
-    # Tenta obter configuração (env ou JSON)
-    db_config = None
-    if get_database_config:
-        db_config = get_database_config()
-    
-    # Fallback: tenta env direto
-    if not db_config:
-        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
-        rest_url = os.environ.get('NEON_REST_URL') or os.environ.get('NEON_REST_API_URL')
-        if db_url:
-            db_config = {'type': 'sql', 'url': db_url}
-        elif rest_url:
-            db_config = {'type': 'rest', 'url': rest_url, 'api_key': os.environ.get('NEON_API_KEY')}
-    
-    if not db_config:
-        raise RuntimeError('Configuração de banco não encontrada. Execute config.py ou defina DATABASE_URL.')
+    db_config = _resolve_db_config()
     
     if db_config['type'] == 'sql':
         statements = []
@@ -886,7 +857,7 @@ def _input_cnpjs_inicial():
     return cnpjs
 
 
-def _menu_edicao(payload):
+def _menu_edicao(payload: dict) -> dict:
     """Menu de edição interativo para ajustar o payload da licença.
 
     Permite adicionar/remover CNPJs e IDs de celular, atualizar validade,
@@ -896,7 +867,11 @@ def _menu_edicao(payload):
         print("\nEstado atual da licença:")
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         print('\nAções: [a]dicionar CNPJ, [r]emover CNPJ, [c]adicionar ID celular, [d]remover ID celular, [u]pdate validade, [s]alvar e sair, [q]cancelar')
-        op = input('Escolha: ').strip().lower()
+        try:
+            op = input('Escolha: ').strip().lower()
+        except EOFError:
+            print('\nEntrada encerrada (EOF). Saindo.')
+            raise KeyboardInterrupt('Edição cancelada devido a EOF')
         if op == 'a':
             v = input('CNPJ a adicionar: ').strip()
             v_clean = ''.join(ch for ch in v if ch.isdigit())
