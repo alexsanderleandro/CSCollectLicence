@@ -12,7 +12,7 @@ def main():
     sql_servidor = 'srv'
     sql_banco = 'db'
 
-    token = gerar_licenca(cnpjs, ids, validade, nome, sql_servidor, sql_banco)
+    token = gerar_licenca(cnpjs, ids, validade, nome, sql_servidor, sql_banco, 'test-token', 'postgres://user:pass@localhost/db')
 
     print('Tentando registrar CNPJs via Neon REST...')
     res = registrar_tokens_por_cnpjs(cnpjs, token)

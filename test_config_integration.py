@@ -42,7 +42,7 @@ def test_config():
     ids = ['device-1']
     validade = '2026-12-31'
     
-    token = gerar_licenca(cnpjs, ids, validade, 'Cliente Teste', 'srv', 'db')
+    token = gerar_licenca(cnpjs, ids, validade, 'Cliente Teste', 'srv', 'db', 'test-token', 'postgres://user:pass@localhost/db')
     print(f'   ✓ Token gerado ({len(token)} bytes)\n')
     
     print('4. Simulando registro no banco...')

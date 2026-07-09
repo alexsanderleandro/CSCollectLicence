@@ -10,6 +10,18 @@ import urllib.parse
 import functools
 import logging
 
+# Importa módulo de criptografia para campos sensíveis
+try:
+    from encryption import encrypt_field, decrypt_field, is_encrypted
+except ImportError:
+    # Fallback se encryption não estiver disponível (compatibilidade)
+    def encrypt_field(v):
+        return v
+    def decrypt_field(v):
+        return v
+    def is_encrypted(v):
+        return False
+
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     _AESGCM_AVAILABLE = True
@@ -163,25 +175,29 @@ def _ensure_token_complete(token: str) -> str:
 
 
 def serializar_licenca(token: str, payload_meta: Optional[Dict[str, Any]] = None) -> str:
-    """Retorna o conteúdo textual que será gravado no arquivo de licença."""
+    """Retorna o conteúdo textual que será gravado no arquivo de licença.
+    
+    Campos sensíveis (api_authorization, api_database_url) são criptografados
+    antes de serem salvos em disco.
+    """
     token = _ensure_token_complete(token)
 
     if payload_meta:
-        # SEGURANÇA (R2): api_authorization e api_database_url NÃO são gravados no
-        # arquivo .key para evitar exposição de credenciais em texto puro.
-        # Esses campos são obtidos em runtime via /validar-licenca (HTTPS + AES no banco).
-        CAMPOS_SENSIVEIS = ('api_authorization', 'api_database_url')
+        # SEGURANÇA (R2): api_authorization e api_database_url são criptografados
+        # no arquivo .key para evitar exposição de credenciais em texto puro.
+        # Esses campos são descriptografados em runtime durante validação.
         out = {
             "cnpjs": payload_meta.get("cnpjs") or payload_meta.get("cnpj") or [],
             "ids": payload_meta.get("ids") or payload_meta.get("ids_celular") or [],
             "token": token,
             "validade": payload_meta.get("validade"),
             "api_url": payload_meta.get("api_url") or "",
+            "api_authorization": encrypt_field(payload_meta.get("api_authorization")),
+            "api_database_url": encrypt_field(payload_meta.get("api_database_url")),
             "nome_cliente": payload_meta.get("nome_cliente") or "",
             "sql_servidor": payload_meta.get("sql_servidor") or "",
             "sql_banco": payload_meta.get("sql_banco") or "",
         }
-        out = {k: v for k, v in out.items() if k not in CAMPOS_SENSIVEIS}
         return json.dumps(out, ensure_ascii=False, indent=2)
 
     return token
@@ -194,8 +210,8 @@ def gerar_licenca(
     nome_cliente: str,
     sql_servidor: str,
     sql_banco: str,
-    api_authorization: str = "",
-    api_database_url: str = ""
+    api_authorization: str,
+    api_database_url: str
 ) -> str:
     """Gera um token de licença.
 
@@ -218,6 +234,10 @@ def gerar_licenca(
       no lado do cliente, via `verificar_licenca`.
     - Mantemos `gerado_em` no payload para rastreabilidade.
     """
+    if not api_authorization:
+        raise ValueError("O campo 'api_authorization' é obrigatório e não pode ser vazio.")
+    if not api_database_url:
+        raise ValueError("O campo 'api_database_url' é obrigatório e não pode ser vazio.")
 
     # 1) Validações mínimas de entrada
     if not cnpjs:
@@ -264,11 +284,11 @@ def gerar_licenca(
         "sql_banco": sql_banco,
         "gerado_em": datetime.now().astimezone().replace(microsecond=0).isoformat(),
     }
-    # Adiciona campos opcionais de autorização e database URL se fornecidos
-    if api_authorization:
-        payload["api_authorization"] = api_authorization
-    if api_database_url:
-        payload["api_database_url"] = api_database_url
+    # NOTA (correção 2026-07-02): api_authorization/api_database_url NÃO são
+    # embutidos no payload do token. O token é apenas assinado (HMAC), não
+    # criptografado, então qualquer valor aqui seria legível por qualquer um
+    # via base64url-decode. Esses dois campos só devem existir no arquivo
+    # .key criptografados via encrypt_field(), gravados por serializar_licenca().
 
     # 3) Serializa para JSON (bytes UTF-8)
     dados = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -316,15 +336,16 @@ def verificar_licenca(token: str, validar_validade: bool = True) -> Dict[str, An
                 if validade_dt.tzinfo is None:
                     validade_dt = validade_dt.replace(tzinfo=timezone.utc)
                 hoje = datetime.now(timezone.utc)
-                if validade_dt < hoje:
-                    raise ValueError("Licença expirada")
+                expirada = validade_dt < hoje
             else:
                 # Assume formato YYYY-MM-DD
                 validade_date = date.fromisoformat(val)
-                if validade_date < date.today():
-                    raise ValueError("Licença expirada")
+                expirada = validade_date < date.today()
         except ValueError:
-            raise ValueError("Formato de validade desconhecido ou licença expirada")
+            raise ValueError("Formato de validade desconhecido")
+
+        if expirada:
+            raise ValueError("Licença expirada")
 
     return payload
 
@@ -389,6 +410,10 @@ def carregar_licenca_de_arquivo(caminho: str = "licenca.key") -> Tuple[Dict[str,
             ids = doc.get('ids_celular') or doc.get('ids') or []
             cnpjs = doc.get('cnpjs') or []
             if cnpjs or ids:
+                # Descriptografa campos sensíveis ao carregar
+                api_auth_raw = doc.get('api_authorization', '')
+                api_db_raw = doc.get('api_database_url', '')
+                
                 payload = {
                     'cnpjs': cnpjs,
                     'ids_celular': ids,
@@ -397,8 +422,9 @@ def carregar_licenca_de_arquivo(caminho: str = "licenca.key") -> Tuple[Dict[str,
                     'sql_servidor': doc.get('sql_servidor', ''),
                     'sql_banco': doc.get('sql_banco', ''),
                     'api_url': doc.get('api_url', ''),
-                    'api_authorization': doc.get('api_authorization', ''),
-                    'api_database_url': doc.get('api_database_url', ''),
+                    # Descriptografa se estiver criptografado
+                    'api_authorization': decrypt_field(api_auth_raw) if is_encrypted(api_auth_raw) else api_auth_raw,
+                    'api_database_url': decrypt_field(api_db_raw) if is_encrypted(api_db_raw) else api_db_raw,
                 }
         except Exception:
             token = None
@@ -416,7 +442,10 @@ def carregar_licenca_de_arquivo(caminho: str = "licenca.key") -> Tuple[Dict[str,
             except Exception as e:
                 # Token em formato externo (ex: CSCollect Manager) — tenta decodificar
                 # o payload da primeira parte do token sem verificar assinatura
-                _logger.warning(f"Assinatura do token inválida ou erro na verificação, tentando fallback: {e}")
+                if isinstance(e, ValueError) and str(e) == "Licença expirada":
+                    _logger.warning(f"Licença expirada, tentando fallback: {e}")
+                else:
+                    _logger.warning(f"Assinatura do token inválida ou erro na verificação, tentando fallback: {e}")
                 try:
                     parte_payload = token.split('.')[0]
                     import base64 as _b64
@@ -931,6 +960,17 @@ if __name__ == "__main__":
             original_payload = copy.deepcopy(payload)
             # permitir edição
             payload = _menu_edicao(payload)
+
+            # api_authorization e api_database_url são obrigatórios; solicita se ausentes
+            api_authorization = payload.get('api_authorization', '')
+            while not api_authorization:
+                api_authorization = input('Token de autorização da API (obrigatório): ').strip()
+            api_database_url = payload.get('api_database_url', '')
+            while not api_database_url:
+                api_database_url = input('URL do banco de dados da API (obrigatório): ').strip()
+            payload['api_authorization'] = api_authorization
+            payload['api_database_url'] = api_database_url
+
             # regenerar token
             novo_token = gerar_licenca(
                 payload.get('cnpjs', []),
@@ -939,6 +979,8 @@ if __name__ == "__main__":
                 payload.get('nome_cliente', ''),
                 payload.get('sql_servidor', ''),
                 payload.get('sql_banco', ''),
+                api_authorization,
+                api_database_url,
             )
 
             conteudo_licenca = salvar_licenca(novo_token, caminho, payload_meta=payload)
@@ -1006,7 +1048,17 @@ if __name__ == "__main__":
                     continue
                 break
 
-            token = gerar_licenca(cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco)
+            api_authorization = ''
+            while not api_authorization:
+                api_authorization = input('Token de autorização da API (obrigatório): ').strip()
+            api_database_url = ''
+            while not api_database_url:
+                api_database_url = input('URL do banco de dados da API (obrigatório): ').strip()
+
+            token = gerar_licenca(
+                cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco,
+                api_authorization, api_database_url,
+            )
             # nome padrão do arquivo
             safe = ''.join(ch for ch in nome_cliente if (ch.isalnum() or ch in (' ', '_', '-'))).strip().replace(' ', '_')
             if not safe:
@@ -1018,6 +1070,8 @@ if __name__ == "__main__":
                 'cnpjs': cnpjs,
                 'ids_celular': ids_celular,
                 'validade': validade,
+                'api_authorization': api_authorization,
+                'api_database_url': api_database_url,
             }
             conteudo_licenca = salvar_licenca(token, caminho, payload_meta=meta)
             print('Licença gerada e salva em', caminho)

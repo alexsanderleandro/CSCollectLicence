@@ -3,6 +3,17 @@
 > **Versão:** 2026-05  
 > **Aplica-se a:** CSCollectManager e APK Android 
 
+> **Nota de atualização (2026-07-02):** a afirmação abaixo de que `api_authorization`/
+> `api_database_url` "não estão no payload do token — existem apenas nas colunas
+> criptografadas do banco" descreve apenas o fluxo de **validação online** (Neon,
+> AES-256-GCM/`MASTER_KEY`). Desde 2026-06-23, esses dois campos também existem no
+> **arquivo `.key` local**, no envelope JSON externo (fora do token), criptografados
+> com Fernet/`ENCRYPTION_SEED` — ver `CSCollectManager\ENCRYPTION_DOCUMENTATION.md`.
+> Os dois esquemas coexistem por design, cada um em seu contexto: Fernet/`ENCRYPTION_SEED`
+> para uso offline a partir do `.key` local; AES-256-GCM/`MASTER_KEY` para os valores
+> lidos ao vivo das colunas do Neon durante a validação online. O restante deste
+> documento (fluxo de validação online) permanece válido.
+
 ---
 
 ## 1. Visão Geral do Fluxo

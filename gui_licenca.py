@@ -435,13 +435,23 @@ class LicencaWindow(QMainWindow):
 
             api_url = api_cfg.get('api_url', '').strip() or None
             api_database_url_cfg = api_cfg.get('database_url', '').strip() or None
+            
+            # Validação automática de DSN Neon (Item 18)
+            if api_database_url_cfg and 'neon.tech' in api_database_url_cfg:
+                from urllib.parse import urlparse, urlunparse
+                try:
+                    p = urlparse(api_database_url_cfg)
+                    if not p.path or p.path == '/':
+                        api_database_url_cfg = urlunparse(p._replace(path='/neondb'))
+                except Exception:
+                    pass
+
             # Fallback: variável de ambiente DATABASE_URL
             if not api_database_url_cfg and get_database_config:
                 db_config = get_database_config()
                 if db_config and db_config.get('type') == 'sql':
                     api_database_url_cfg = db_config.get('url')
 
-            # Salva o arquivo .key (Item 16: api_authorization e api_database_url não vão para o .key)
             meta = {
                 'cnpjs': cnpjs,
                 'ids_celular': ids_celular,
@@ -450,6 +460,8 @@ class LicencaWindow(QMainWindow):
                 'nome_cliente': nome_cliente,
                 'sql_servidor': sql_servidor,
                 'sql_banco': sql_banco,
+                'api_authorization': api_authorization,
+                'api_database_url': api_database_url,
             }
             conteudo_licenca = salvar_licenca(lic_token, path, payload_meta=meta)
             

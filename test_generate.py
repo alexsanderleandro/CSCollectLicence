@@ -11,9 +11,17 @@ validade = '2026-12-31'
 nome = 'Cliente Teste'
 sql_servidor = 'srv'
 sql_banco = 'db'
+api_authorization = 'test-token'
+api_database_url = 'postgres://user:pass@localhost/db'
 
-token = gerar_licenca(cnpjs, ids, validade, nome, sql_servidor, sql_banco)
-meta = {'cnpjs': cnpjs, 'ids_celular': ids, 'validade': validade}
+token = gerar_licenca(cnpjs, ids, validade, nome, sql_servidor, sql_banco, api_authorization, api_database_url)
+meta = {
+    'cnpjs': cnpjs,
+    'ids_celular': ids,
+    'validade': validade,
+    'api_authorization': api_authorization,
+    'api_database_url': api_database_url,
+}
 caminho = 'test_Licenca_CSCollectManager_cliente.key'
 
 salvar_licenca(token, caminho, payload_meta=meta)
