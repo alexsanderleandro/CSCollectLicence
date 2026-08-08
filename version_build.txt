@@ -1,7 +1,7 @@
 ﻿VSVersionInfo(
     ffi=FixedFileInfo(
-        filevers=(26,7,9,0),
-        prodvers=(26,7,9,0),
+        filevers=(26,7,26,0),
+        prodvers=(26,7,26,0),
         mask=0x3f,
         flags=0x0,
         OS=0x40004,
@@ -17,13 +17,13 @@
                     [
                         StringStruct('CompanyName', 'CEOsoftware'),
                         StringStruct('FileDescription', 'CSCollectLicence'),
-                        StringStruct('FileVersion', '26.07.09 rev. 1'),
+                        StringStruct('FileVersion', '26.07.26 rev. 1'),
                         StringStruct('InternalName', 'CSCollectLicence.exe'),
                         StringStruct('OriginalFilename', 'CSCollectLicence.exe'),
                         StringStruct('ProductName', 'CSCollectLicence'),
                         StringStruct('CompanyName', 'CEOsoftware'),
                         StringStruct('LegalTrademarks', ''),
-                        StringStruct('ProductVersion', '26.07.09 rev. 1'),
+                        StringStruct('ProductVersion', '26.07.26 rev. 1'),
                         StringStruct('LegalCopyright', 'Copyright © 2026 CEOsoftware')
                     ]
                 )

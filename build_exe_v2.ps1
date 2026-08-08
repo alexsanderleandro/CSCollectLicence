@@ -34,17 +34,26 @@ $versionArg = ''
 if (Test-Path 'version_build.txt') { $versionArg = "--version-file=version_build.txt" }
 
 Write-Host "Executando PyInstaller..."
-pyinstaller --windowed --onefile --name $appName --add-data $addData --add-data $addEnv $versionArg $iconArg $scriptEntry
+# --onedir: extração acontece no build (não a cada abertura, como no --onefile),
+# eliminando os vários segundos de descompactação + scan do antivírus no startup.
+pyinstaller --windowed --onedir --contents-directory _internal --name $appName --add-data $addData --add-data $addEnv $versionArg $iconArg $scriptEntry
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "PyInstaller falhou com código $LASTEXITCODE"
     exit $LASTEXITCODE
 }
 
-$distPath = Join-Path -Path (Get-Location) -ChildPath "dist\$appName.exe"
+$distDir = Join-Path -Path (Get-Location) -ChildPath "dist\$appName"
+$distPath = Join-Path -Path $distDir -ChildPath "$appName.exe"
 if (Test-Path $distPath) {
-    Write-Host "Build concluído com sucesso: $distPath"
+    Write-Host "Gerando pacote zip para distribuição..."
+    $zipPath = Join-Path -Path (Get-Location) -ChildPath "dist\$appName.zip"
+    Compress-Archive -Path $distDir -DestinationPath $zipPath -Force
+    Write-Host "Build concluído com sucesso:"
+    Write-Host "  Pasta do app: $distDir"
+    Write-Host "  Executável:   $distPath"
+    Write-Host "  Zip p/ envio: $zipPath"
     Write-Host "Lembre-se de fornecer MASTER_KEY via variável de ambiente ou arquivo .env antes de executar o exe."
 } else {
-    Write-Error "Não foi possível encontrar o executável em dist"
+    Write-Error "Não foi possível encontrar o executável em dist\$appName"
 }

@@ -11,7 +11,9 @@ CREATE TABLE clientes (
   token TEXT NOT NULL,
   validade VARCHAR(10),
   ativo BOOLEAN DEFAULT true,
-  nome_cliente VARCHAR(30)
+  nome_cliente VARCHAR(255),
+  qtde_cnpjs INTEGER,
+  qtde_devices INTEGER
 );
 ```
 
@@ -24,7 +26,10 @@ CREATE TABLE clientes (
 | `token` | TEXT | Token assinado (HMAC-SHA256) contendo todos os dados da licença em formato base64url |
 | `validade` | VARCHAR(10) | Data de validade no formato YYYY-MM-DD.<br>Exemplo: `"2026-12-31"` ou `NULL` para sem validade |
 | `ativo` | BOOLEAN | Flag para indicar se o registro está ativo (padrão: `true`) |
-| `nome_cliente` | VARCHAR(30) | Nome do cliente vinculado à licença (máx 30 caracteres).<br>Exemplo: `"Empresa ABC Ltda"` |
+| `nome_cliente` | VARCHAR(255) | Nomes das empresas separados por vírgula, **pareados por posição com a coluna `cnpj`** (máx 30 caracteres cada).<br>Exemplo: `"Empresa ABC Ltda,Empresa ABC Filial"` |
+| `qtde_cnpjs` | INTEGER | Quantidade de CNPJs contratados/liberados (adicionado v9). Uso interno/visual — não faz parte do token assinado. |
+| `qtde_devices` | INTEGER | Quantidade de devices contratados/liberados (adicionado v9). Uso interno/visual — não faz parte do token assinado. |
+| `tipo_licenca` | VARCHAR(10) | Tipo/plano da licença: `'Lite'` ou `'Pro'` (adicionado v10, default `'Lite'`). Diferente dos campos acima, **faz parte do payload assinado** do token (`gerar_licenca`) — a coluna é só um espelho para consulta no painel. |
 
 ---
 
@@ -34,9 +39,10 @@ CREATE TABLE clientes (
 
 1. **Gera token assinado** contendo:
    - Lista de CNPJs
+   - Lista de nomes das empresas (pareada por posição com a de CNPJs)
    - Lista de IDs de celular
    - Validade
-   - Nome do cliente
+   - Nome do cliente (string completa, separada por vírgula)
    - Servidor SQL
    - Banco de dados
    - Data/hora de geração
@@ -45,15 +51,23 @@ CREATE TABLE clientes (
    ```json
    {
      "cnpjs": ["12345678000199", "98765432000188"],
+     "nomes": ["Empresa ABC Ltda", "Empresa ABC Filial"],
      "ids": ["device-1", "device-2"],
      "token": "eyJjbnBqc...",
      "validade": "2026-12-31",
+     "nome_cliente": "Empresa ABC Ltda,Empresa ABC Filial",
      "database_url": "postgresql://user:pass@host:5432/db"
    }
    ```
 
+   `nomes[i]` corresponde a `cnpjs[i]`. Licenças geradas antes do suporte
+   multi-empresa não têm a chave `nomes` — nesse caso o nome único de
+   `nome_cliente` é replicado para todos os CNPJs (ver `resolver_nomes` em
+   `licenca.py`).
+
 3. **Registra no banco Neon** (se configurado):
    - CNPJs → concatenados com vírgula
+   - Nomes das empresas → concatenados com vírgula, na mesma ordem dos CNPJs
    - IDs celular → concatenados com vírgula
    - Insere **1 registro único**
    - Usa `ON CONFLICT (cnpj) DO UPDATE` para atualizar se já existir
@@ -65,15 +79,15 @@ CREATE TABLE clientes (
 
 **Licença com:**
 - CNPJs: `65391113000120`, `21581137000157`
+- Nomes: `Empresa XYZ`, `Empresa XYZ Filial`
 - IDs: `a3e9e3a0a4659652`
 - Validade: `2026-05-01`
-- Nome: `Empresa XYZ`
 
 **Registro no banco:**
 
 | cnpj | idcelular | token | validade | ativo | nome_cliente |
 |------|-----------|-------|----------|-------|-------------|
-| 65391113000120,21581137000157 | a3e9e3a0a4659652 | eyJjbnBqcyI6WyI2NTM5M... | 2026-05-01 | true | Empresa XYZ |
+| 65391113000120,21581137000157 | a3e9e3a0a4659652 | eyJjbnBqcyI6WyI2NTM5M... | 2026-05-01 | true | Empresa XYZ,Empresa XYZ Filial |
 
 ---
 

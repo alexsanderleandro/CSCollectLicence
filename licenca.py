@@ -174,11 +174,48 @@ def _ensure_token_complete(token: str) -> str:
     return f"{token}.{_b64u_encode(assinatura)}"
 
 
-def serializar_licenca(token: str, payload_meta: Optional[Dict[str, Any]] = None) -> str:
+def resolver_nomes(cnpjs: List[str], nomes: Any = None, nome_cliente: str = '') -> List[str]:
+    """Devolve um nome por CNPJ, na mesma ordem, aplicando retrocompatibilidade.
+
+    Licenças geradas antes do suporte multi-empresa têm um único `nome_cliente`
+    para N CNPJs. Regras, em ordem:
+      1) `nomes` já pareado com `cnpjs` -> usa direto;
+      2) senão, split de `nome_cliente` por vírgula;
+      3) sobrando 1 nome para N CNPJs -> replica em todas as posições;
+      4) posição sem nome -> usa o próprio CNPJ como rótulo.
+    """
+    cnpjs = [str(c).strip() for c in (cnpjs or [])]
+
+    if isinstance(nomes, str):
+        lista = [n.strip() for n in nomes.split(',') if n.strip()]
+    elif nomes:
+        lista = [str(n).strip() for n in nomes if str(n).strip()]
+    else:
+        lista = []
+
+    if not lista and nome_cliente:
+        lista = [n.strip() for n in str(nome_cliente).split(',') if n.strip()]
+
+    if len(lista) == 1 and len(cnpjs) > 1:
+        lista = lista * len(cnpjs)
+
+    return [lista[i] if i < len(lista) else cnpjs[i] for i in range(len(cnpjs))]
+
+
+def serializar_licenca(
+    token: str,
+    payload_meta: Optional[Dict[str, Any]] = None,
+    qtde_cnpjs: Optional[int] = None,
+    qtde_devices: Optional[int] = None,
+) -> str:
     """Retorna o conteúdo textual que será gravado no arquivo de licença.
-    
+
     Campos sensíveis (api_authorization, api_database_url) são criptografados
     antes de serem salvos em disco.
+
+    `qtde_cnpjs`/`qtde_devices` são gravados apenas no envelope JSON, para fins
+    visuais/controle interno — NÃO fazem parte do token assinado (não afetam a
+    validação da licença no APK/app desktop).
     """
     token = _ensure_token_complete(token)
 
@@ -186,9 +223,16 @@ def serializar_licenca(token: str, payload_meta: Optional[Dict[str, Any]] = None
         # SEGURANÇA (R2): api_authorization e api_database_url são criptografados
         # no arquivo .key para evitar exposição de credenciais em texto puro.
         # Esses campos são descriptografados em runtime durante validação.
+        _cnpjs = payload_meta.get("cnpjs") or payload_meta.get("cnpj") or []
+        _ids = payload_meta.get("ids") or payload_meta.get("ids_celular") or []
         out = {
-            "cnpjs": payload_meta.get("cnpjs") or payload_meta.get("cnpj") or [],
-            "ids": payload_meta.get("ids") or payload_meta.get("ids_celular") or [],
+            "cnpjs": _cnpjs,
+            "nomes": resolver_nomes(
+                _cnpjs,
+                payload_meta.get("nomes"),
+                payload_meta.get("nome_cliente") or "",
+            ),
+            "ids": _ids,
             "token": token,
             "validade": payload_meta.get("validade"),
             "api_url": payload_meta.get("api_url") or "",
@@ -197,6 +241,9 @@ def serializar_licenca(token: str, payload_meta: Optional[Dict[str, Any]] = None
             "nome_cliente": payload_meta.get("nome_cliente") or "",
             "sql_servidor": payload_meta.get("sql_servidor") or "",
             "sql_banco": payload_meta.get("sql_banco") or "",
+            "qtde_cnpjs": qtde_cnpjs if qtde_cnpjs is not None else len(_cnpjs),
+            "qtde_devices": qtde_devices if qtde_devices is not None else len(_ids),
+            "tipo_licenca": payload_meta.get("tipo_licenca") or "Lite",
         }
         return json.dumps(out, ensure_ascii=False, indent=2)
 
@@ -207,11 +254,12 @@ def gerar_licenca(
     cnpjs: List[str],
     ids_celular: List[str],
     validade: str,
-    nome_cliente: str,
+    nomes: Any,
     sql_servidor: str,
     sql_banco: str,
     api_authorization: str,
-    api_database_url: str
+    api_database_url: str,
+    tipo_licenca: str = 'Lite',
 ) -> str:
     """Gera um token de licença.
 
@@ -222,8 +270,8 @@ def gerar_licenca(
 
     Passos principais:
      1) Validações: exige pelo menos um CNPJ, pelo menos um ID de celular
-         e um `nome_cliente` (máx 30 caracteres).
-    2) Constrói o payload (lista de `cnpjs`, `ids_celular`, `validade` e metadados).
+         e um nome por CNPJ (máx 30 caracteres cada).
+    2) Constrói o payload (lista de `cnpjs`, `nomes`, `ids_celular`, `validade` e metadados).
     3) Serializa o payload em JSON UTF-8.
     4) Calcula HMAC-SHA256 sobre os bytes do JSON usando `MASTER_KEY`.
     5) Codifica payload e assinatura em base64url e concatena com '.' — esse é o token.
@@ -244,12 +292,24 @@ def gerar_licenca(
         raise ValueError("É obrigatório informar pelo menos um CNPJ.")
     if not ids_celular:
         raise ValueError("É obrigatório informar pelo menos um ID de celular.")
-    # valida nome do cliente
-    if not nome_cliente or not str(nome_cliente).strip():
+    # valida os nomes: um por CNPJ, na mesma ordem
+    if isinstance(nomes, str):
+        nomes = [n.strip() for n in nomes.split(',')]
+    nomes = [str(n).strip() for n in (nomes or [])]
+    if not nomes or not any(nomes):
         raise ValueError("É obrigatório informar o nome do cliente.")
-    nome_cliente = str(nome_cliente).strip()
-    if len(nome_cliente) > 30:
-        raise ValueError("O nome do cliente deve ter no máximo 30 caracteres.")
+    if len(nomes) != len(cnpjs):
+        raise ValueError(
+            f"Informe um nome para cada CNPJ: {len(cnpjs)} CNPJ(s) e {len(nomes)} nome(s)."
+        )
+    for i, n in enumerate(nomes):
+        if not n:
+            raise ValueError(f"O nome do CNPJ {cnpjs[i]} não pode ser vazio.")
+        if len(n) > 30:
+            raise ValueError(
+                f"O nome do cliente deve ter no máximo 30 caracteres: '{n}'."
+            )
+    nome_cliente = ','.join(nomes)
 
     # valida servidor SQL e banco
     if not sql_servidor or not str(sql_servidor).strip():
@@ -262,6 +322,11 @@ def gerar_licenca(
     sql_banco = str(sql_banco).strip()
     if len(sql_banco) > 30:
         raise ValueError("O nome do banco de dados deve ter no máximo 30 caracteres.")
+
+    # valida tipo de licença
+    tipo_licenca = str(tipo_licenca).strip()
+    if tipo_licenca not in ('Lite', 'Pro'):
+        raise ValueError(f"tipo_licenca deve ser 'Lite' ou 'Pro', recebido: '{tipo_licenca}'.")
 
     # Valida formato da validade se fornecido
     if validade:
@@ -277,11 +342,13 @@ def gerar_licenca(
     # registrar hora local com offset correto (ex: 2026-04-01T12:34:56+03:00)
     payload = {
         "cnpjs": cnpjs,
+        "nomes": nomes,
         "ids_celular": ids_celular,
         "validade": validade,
         "nome_cliente": nome_cliente,
         "sql_servidor": sql_servidor,
         "sql_banco": sql_banco,
+        "tipo_licenca": tipo_licenca,
         "gerado_em": datetime.now().astimezone().replace(microsecond=0).isoformat(),
     }
     # NOTA (correção 2026-07-02): api_authorization/api_database_url NÃO são
@@ -350,7 +417,13 @@ def verificar_licenca(token: str, validar_validade: bool = True) -> Dict[str, An
     return payload
 
 
-def salvar_licenca(token: str, caminho: str = "licenca.key", payload_meta: Optional[Dict[str, Any]] = None) -> str:
+def salvar_licenca(
+    token: str,
+    caminho: str = "licenca.key",
+    payload_meta: Optional[Dict[str, Any]] = None,
+    qtde_cnpjs: Optional[int] = None,
+    qtde_devices: Optional[int] = None,
+) -> str:
     """Salva a licença no arquivo especificado.
 
     Comportamentos:
@@ -363,8 +436,12 @@ def salvar_licenca(token: str, caminho: str = "licenca.key", payload_meta: Optio
     - caminho: caminho do arquivo onde será gravado.
     - payload_meta: dict opcional com chaves semelhantes ao payload
       (por exemplo: {'cnpjs': [...], 'ids_celular': [...], 'validade': 'YYYY-MM-DD', 'database_url': '...'}).
+    - qtde_cnpjs/qtde_devices: quantidades contratadas, gravadas apenas no
+      envelope JSON (uso interno/visual, não fazem parte do token assinado).
     """
-    conteudo = serializar_licenca(token, payload_meta=payload_meta)
+    conteudo = serializar_licenca(
+        token, payload_meta=payload_meta, qtde_cnpjs=qtde_cnpjs, qtde_devices=qtde_devices
+    )
 
     # R7: utf-8 garante compatibilidade com caracteres especiais em qualquer plataforma
     with open(caminho, "w", encoding='utf-8') as f:
@@ -416,6 +493,7 @@ def carregar_licenca_de_arquivo(caminho: str = "licenca.key") -> Tuple[Dict[str,
                 
                 payload = {
                     'cnpjs': cnpjs,
+                    'nomes': resolver_nomes(cnpjs, doc.get('nomes'), doc.get('nome_cliente', '')),
                     'ids_celular': ids,
                     'validade': doc.get('validade', ''),
                     'nome_cliente': doc.get('nome_cliente', ''),
@@ -425,6 +503,10 @@ def carregar_licenca_de_arquivo(caminho: str = "licenca.key") -> Tuple[Dict[str,
                     # Descriptografa se estiver criptografado
                     'api_authorization': decrypt_field(api_auth_raw) if is_encrypted(api_auth_raw) else api_auth_raw,
                     'api_database_url': decrypt_field(api_db_raw) if is_encrypted(api_db_raw) else api_db_raw,
+                    # Uso interno/visual — ausente em licenças antigas: cai para a contagem real
+                    'qtde_cnpjs': doc.get('qtde_cnpjs') if doc.get('qtde_cnpjs') is not None else len(cnpjs),
+                    'qtde_devices': doc.get('qtde_devices') if doc.get('qtde_devices') is not None else len(ids),
+                    'tipo_licenca': doc.get('tipo_licenca') or 'Lite',
                 }
         except Exception:
             token = None
@@ -452,7 +534,7 @@ def carregar_licenca_de_arquivo(caminho: str = "licenca.key") -> Tuple[Dict[str,
                     padding = '=' * (-len(parte_payload) % 4)
                     raw_payload = _b64.urlsafe_b64decode((parte_payload + padding).encode('ascii'))
                     doc_token = json.loads(raw_payload.decode('utf-8'))
-                    for k in ('nome_cliente', 'sql_servidor', 'sql_banco', 'validade', 'cnpjs', 'ids_celular'):
+                    for k in ('nome_cliente', 'nomes', 'sql_servidor', 'sql_banco', 'validade', 'cnpjs', 'ids_celular'):
                         if not payload.get(k) and doc_token.get(k):
                             payload[k] = doc_token[k]
                 except Exception:
@@ -557,6 +639,54 @@ def _exec_db_statements(statements):
                 pass
 
 
+def _fetch_all(query: str) -> Tuple[List[str], List[tuple]]:
+    """Executa uma consulta somente leitura e retorna (colunas, linhas).
+
+    Usado pelo painel administrativo (leitura). Colunas são obtidas
+    dinamicamente via `cursor.description`, então funcionam mesmo para
+    tabelas cujo schema completo não está documentado neste repositório
+    (ex.: `activation_tokens`).
+    """
+    dsn = _get_db_dsn_from_env()
+    if not dsn:
+        raise RuntimeError('Credenciais do banco não encontradas nas variáveis de ambiente (DATABASE_URL ou NEON_*).')
+
+    db = None
+    try:
+        import psycopg2 as db
+    except Exception:
+        try:
+            import psycopg as db
+        except Exception:
+            raise RuntimeError('Instale psycopg2 ou psycopg para consultar o banco (pip install psycopg2-binary).')
+
+    conn = db.connect(dsn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query)
+            colunas = [desc[0] for desc in cur.description]
+            linhas = cur.fetchall()
+            return colunas, [tuple(row) for row in linhas]
+    finally:
+        conn.close()
+
+
+def listar_clientes() -> Tuple[List[str], List[tuple]]:
+    """Lista todos os registros da tabela `clientes` (somente leitura).
+
+    Retorna (colunas, linhas) para popular o painel administrativo.
+    """
+    return _fetch_all("SELECT * FROM clientes ORDER BY dataalteracao DESC NULLS LAST;")
+
+
+def listar_activation_tokens() -> Tuple[List[str], List[tuple]]:
+    """Lista todos os registros da tabela `activation_tokens` (somente leitura).
+
+    Retorna (colunas, linhas) para popular o painel administrativo.
+    """
+    return _fetch_all("SELECT * FROM activation_tokens ORDER BY criado_em DESC;")
+
+
 def registrar_tokens_por_cnpjs(cnpjs: List[str], token: str, arq_licenca: Optional[str] = None) -> Any:
     """Insere/atualiza o `token` para cada CNPJ na tabela `clientes`.
 
@@ -614,14 +744,28 @@ def registrar_tokens_por_cnpjs_single(
     sql_banco: str = '',
     api_authorization: str = '',
     api_database_url: str = '',
-    arq_licenca: Optional[str] = None
+    arq_licenca: Optional[str] = None,
+    qtde_cnpjs: Optional[int] = None,
+    qtde_devices: Optional[int] = None,
+    tipo_licenca: str = 'Lite',
 ) -> Any:
-    """Insere/atualiza um ÚNICO registro na tabela `clientes` com CNPJs e IDs separados por vírgula."""
+    """Insere/atualiza um ÚNICO registro na tabela `clientes` com CNPJs e IDs separados por vírgula.
+
+    `qtde_cnpjs`/`qtde_devices` são gravados apenas para uso interno/visual
+    (controle de quantos CNPJs/devices foram liberados) — não afetam o token.
+    `tipo_licenca` ('Lite'/'Pro') faz parte do token assinado — aqui é apenas
+    espelhado na coluna para permitir consulta/filtro no painel administrativo.
+    """
     if not cnpjs_str:
         return
-    
+
     db_config = _resolve_db_config()
     token = _ensure_token_complete(token)
+
+    if qtde_cnpjs is None:
+        qtde_cnpjs = len([c for c in cnpjs_str.split(',') if c.strip()])
+    if qtde_devices is None:
+        qtde_devices = len([i for i in ids_str.split(',') if i.strip()])
 
     # Criptografa em repouso os campos sensíveis ANTES de enviar ao banco
     api_authorization_enc = _encrypt_field(api_authorization) if api_authorization else None
@@ -636,15 +780,18 @@ def registrar_tokens_por_cnpjs_single(
             api_authorization_enc=api_authorization_enc,
             api_database_url_enc=api_database_url_enc,
             arq_licenca=arq_licenca,
+            qtde_cnpjs=qtde_cnpjs, qtde_devices=qtde_devices,
+            tipo_licenca=tipo_licenca,
         )
     q = (
-        "INSERT INTO clientes (cnpj, idcelular, token, validade, ativo, nome_cliente, sql_servidor, sql_banco, api_authorization, api_database_url, arq_licenca, reginclusao, dataalteracao) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now()) "
+        "INSERT INTO clientes (cnpj, idcelular, token, validade, ativo, nome_cliente, sql_servidor, sql_banco, api_authorization, api_database_url, arq_licenca, qtde_cnpjs, qtde_devices, tipo_licenca, reginclusao, dataalteracao) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now()) "
         "ON CONFLICT (cnpj) DO UPDATE SET idcelular = EXCLUDED.idcelular, token = EXCLUDED.token, "
         "validade = EXCLUDED.validade, ativo = EXCLUDED.ativo, nome_cliente = EXCLUDED.nome_cliente, "
         "sql_servidor = EXCLUDED.sql_servidor, sql_banco = EXCLUDED.sql_banco, "
         "api_authorization = EXCLUDED.api_authorization, api_database_url = EXCLUDED.api_database_url, "
-        "arq_licenca = EXCLUDED.arq_licenca, "
+        "arq_licenca = EXCLUDED.arq_licenca, qtde_cnpjs = EXCLUDED.qtde_cnpjs, qtde_devices = EXCLUDED.qtde_devices, "
+        "tipo_licenca = EXCLUDED.tipo_licenca, "
         "dataalteracao = now();"
     )
     # converte string vazia de validade para NULL para colunas do tipo DATE
@@ -653,11 +800,12 @@ def registrar_tokens_por_cnpjs_single(
         cnpjs_str, ids_str, token, validade_param, ativa,
         nome_cliente, sql_servidor or None, sql_banco or None,
         api_authorization_enc, api_database_url_enc, arq_licenca,
+        qtde_cnpjs, qtde_devices, tipo_licenca,
     ))]
     return _exec_db_statements(statements)
 
 
-def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade='', api_key=None, nome_cliente='', sql_servidor='', sql_banco='', api_authorization_enc=None, api_database_url_enc=None, arq_licenca=None):
+def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade='', api_key=None, nome_cliente='', sql_servidor='', sql_banco='', api_authorization_enc=None, api_database_url_enc=None, arq_licenca=None, qtde_cnpjs=None, qtde_devices=None, tipo_licenca='Lite'):
     """Registra via REST um único registro com CNPJs e IDs separados por vírgula.
     
     `api_authorization_enc` e `api_database_url_enc` devem chegar já criptografados
@@ -692,6 +840,9 @@ def _registrar_tokens_single_rest(base_url, cnpjs_str, ids_str, token, validade=
         'api_authorization': api_authorization_enc,   # já criptografado
         'api_database_url': api_database_url_enc,     # já criptografado
         'arq_licenca': arq_licenca,
+        'qtde_cnpjs': qtde_cnpjs,
+        'qtde_devices': qtde_devices,
+        'tipo_licenca': tipo_licenca,
         'reginclusao': now_iso,
         'dataalteracao': now_iso,
     }
@@ -741,7 +892,7 @@ def _registrar_tokens_por_cnpjs_rest(base_url, cnpjs, token, api_key=None, arq_l
         raise RuntimeError(f'Falha na conexão REST: {e}')
 
 
-def gerar_activation_token(cnpjs, device_id='', ttl_horas=24, gerado_por=''):
+def gerar_activation_token(cnpjs, device_id='', ttl_horas=24, gerado_por='', tipo_licenca='Lite'):
     """Gera um token de ativação avulso para uso no fluxo "Ativar Online".
 
     O token raw (43 chars URL-safe) é retornado UMA única vez para ser
@@ -752,10 +903,14 @@ def gerar_activation_token(cnpjs, device_id='', ttl_horas=24, gerado_por=''):
     - device_id: ID do celular do cliente (obtido na primeira abertura do app).
     - ttl_horas: tempo de vida em horas (padrão 24h).
     - gerado_por: identificação do operador (para auditoria).
+    - tipo_licenca: 'Lite' ou 'Pro' — plano associado a este token de ativação.
 
     Retorna: (raw_token: str, expira_em: datetime)
     Lança RuntimeError se a inserção no banco falhar.
     """
+    tipo_licenca = str(tipo_licenca).strip()
+    if tipo_licenca not in ('Lite', 'Pro'):
+        raise ValueError(f"tipo_licenca deve ser 'Lite' ou 'Pro', recebido: '{tipo_licenca}'.")
     def _normalizar_lista(valor):
         if valor is None:
             return []
@@ -802,8 +957,8 @@ def gerar_activation_token(cnpjs, device_id='', ttl_horas=24, gerado_por=''):
             with engine.connect() as conn:
                 conn.execute(_sa.text("""
                     INSERT INTO activation_tokens
-                        (cnpj, token_hash, criado_em, expira_em, device_id_autorizado, gerado_por)
-                    VALUES (:cnpj, :hash, :criado, :expira, :dev, :gby)
+                        (cnpj, token_hash, criado_em, expira_em, device_id_autorizado, gerado_por, tipo_licenca)
+                    VALUES (:cnpj, :hash, :criado, :expira, :dev, :gby, :tipo)
                 """), {
                     'cnpj': cnpj_str,
                     'hash': token_hash,
@@ -811,6 +966,7 @@ def gerar_activation_token(cnpjs, device_id='', ttl_horas=24, gerado_por=''):
                     'expira': expira_em,
                     'dev': device_id_str,
                     'gby': gerado_por or '',
+                    'tipo': tipo_licenca,
                 })
                 conn.commit()
         except Exception as e:
@@ -869,29 +1025,50 @@ def _remover_cnpjs_do_db_rest(base_url, cnpjs, api_key=None):
 
 
 def _input_cnpjs_inicial():
-    """Modo interativo: lê vários CNPJs do usuário até linha em branco.
+    """Modo interativo: lê pares CNPJ/nome do usuário até linha em branco.
 
-    Retorna uma lista de CNPJs (apenas dígitos), na ordem informada.
+    Retorna `(cnpjs, nomes)` — duas listas pareadas por posição, na ordem informada.
     """
     cnpjs = []
-    print("Digite os CNPJs (apenas dígitos). Enter em branco para terminar:")
+    nomes = []
+    print("Digite os CNPJs (apenas dígitos) e o nome da empresa. Enter em branco no CNPJ para terminar:")
     while True:
         v = input("CNPJ: ").strip()
         if not v:
             break
         # simples normalização: manter apenas dígitos
         v_clean = ''.join(ch for ch in v if ch.isdigit())
-        if v_clean:
-            cnpjs.append(v_clean)
-    return cnpjs
+        if not v_clean:
+            continue
+        nome = _input_nome_empresa(v_clean)
+        cnpjs.append(v_clean)
+        nomes.append(nome)
+    return cnpjs, nomes
+
+
+def _input_nome_empresa(cnpj: str) -> str:
+    """Lê o nome da empresa de um CNPJ, aplicando a mesma regra de `gerar_licenca`."""
+    while True:
+        nome = input(f'Nome da empresa do CNPJ {cnpj} (obrigatório, máx 30): ').strip()
+        if not nome:
+            print('O nome é obrigatório.')
+            continue
+        if len(nome) > 30:
+            print('O nome deve ter no máximo 30 caracteres.')
+            continue
+        return nome
 
 
 def _menu_edicao(payload: dict) -> dict:
     """Menu de edição interativo para ajustar o payload da licença.
 
-    Permite adicionar/remover CNPJs e IDs de celular, atualizar validade,
-    e retornar o payload modificado.
+    Permite adicionar/remover CNPJs (com o nome da empresa) e IDs de celular,
+    atualizar validade, e retornar o payload modificado.
     """
+    # Garante `nomes` pareado com `cnpjs` mesmo em licenças antigas (1 nome p/ N CNPJs)
+    payload['nomes'] = resolver_nomes(
+        payload.get('cnpjs', []), payload.get('nomes'), payload.get('nome_cliente', '')
+    )
     while True:
         print("\nEstado atual da licença:")
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -906,6 +1083,7 @@ def _menu_edicao(payload: dict) -> dict:
             v_clean = ''.join(ch for ch in v if ch.isdigit())
             if v_clean and v_clean not in payload.get('cnpjs', []):
                 payload.setdefault('cnpjs', []).append(v_clean)
+                payload.setdefault('nomes', []).append(_input_nome_empresa(v_clean))
                 print('CNPJ adicionado.')
             else:
                 print('CNPJ inválido ou já presente.')
@@ -913,7 +1091,11 @@ def _menu_edicao(payload: dict) -> dict:
             v = input('CNPJ a remover: ').strip()
             v_clean = ''.join(ch for ch in v if ch.isdigit())
             if v_clean in payload.get('cnpjs', []):
-                payload['cnpjs'].remove(v_clean)
+                # remove o nome da mesma posição para manter as listas pareadas
+                idx = payload['cnpjs'].index(v_clean)
+                payload['cnpjs'].pop(idx)
+                if idx < len(payload.get('nomes', [])):
+                    payload['nomes'].pop(idx)
                 print('CNPJ removido.')
             else:
                 print('CNPJ não encontrado na licença.')
@@ -976,7 +1158,7 @@ if __name__ == "__main__":
                 payload.get('cnpjs', []),
                 payload.get('ids_celular', []),
                 payload.get('validade', ''),
-                payload.get('nome_cliente', ''),
+                payload.get('nomes', []),
                 payload.get('sql_servidor', ''),
                 payload.get('sql_banco', ''),
                 api_authorization,
@@ -1003,7 +1185,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f'⚠ Aviso: falha ao remover CNPJs no banco: {e}')
         else:
-            cnpjs = _input_cnpjs_inicial()
+            cnpjs, nomes = _input_cnpjs_inicial()
             ids_celular = []
             print("Digite os IDs de celular. Enter em branco para terminar:")
             while True:
@@ -1013,17 +1195,7 @@ if __name__ == "__main__":
                 if v not in ids_celular:
                     ids_celular.append(v)
             validade = input('Validade (YYYY-MM-DD ou ISO, vazio para sem validade): ').strip()
-            # solicita nome do cliente (obrigatório, máx 30)
-            nome_cliente = ''
-            while True:
-                nome_cliente = input('Nome do cliente (obrigatório, máx 30): ').strip()
-                if not nome_cliente:
-                    print('Nome do cliente é obrigatório.')
-                    continue
-                if len(nome_cliente) > 30:
-                    print('Nome muito longo (máx 30 caracteres).')
-                    continue
-                break
+            # os nomes já foram informados junto de cada CNPJ em _input_cnpjs_inicial()
 
             # solicita servidor SQL e banco (mesma lógica)
             sql_servidor = ''
@@ -1056,11 +1228,12 @@ if __name__ == "__main__":
                 api_database_url = input('URL do banco de dados da API (obrigatório): ').strip()
 
             token = gerar_licenca(
-                cnpjs, ids_celular, validade, nome_cliente, sql_servidor, sql_banco,
+                cnpjs, ids_celular, validade, nomes, sql_servidor, sql_banco,
                 api_authorization, api_database_url,
             )
-            # nome padrão do arquivo
-            safe = ''.join(ch for ch in nome_cliente if (ch.isalnum() or ch in (' ', '_', '-'))).strip().replace(' ', '_')
+            # nome padrão do arquivo: primeira empresa da licença
+            _nome_arq = nomes[0] if nomes else ''
+            safe = ''.join(ch for ch in _nome_arq if (ch.isalnum() or ch in (' ', '_', '-'))).strip().replace(' ', '_')
             if not safe:
                 safe = 'cliente'
             default_name = f"Licenca_CSCollectManager_{safe}.key"
@@ -1068,8 +1241,12 @@ if __name__ == "__main__":
             # salva também metadados no formato recomendado para o manager
             meta = {
                 'cnpjs': cnpjs,
+                'nomes': nomes,
+                'nome_cliente': ','.join(nomes),
                 'ids_celular': ids_celular,
                 'validade': validade,
+                'sql_servidor': sql_servidor,
+                'sql_banco': sql_banco,
                 'api_authorization': api_authorization,
                 'api_database_url': api_database_url,
             }
