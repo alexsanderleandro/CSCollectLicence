@@ -475,6 +475,25 @@ def carregar_licenca_de_arquivo(caminho: str = "licenca.key") -> Tuple[Dict[str,
         except UnicodeDecodeError:
             continue
 
+    return _parse_licenca_conteudo(conteudo)
+
+
+def carregar_licenca_de_conteudo(conteudo: str) -> Tuple[Dict[str, Any], str]:
+    """Igual a `carregar_licenca_de_arquivo`, mas a partir de uma string já em memória.
+
+    Útil para conteúdo obtido de outro lugar que não um arquivo em disco — por
+    exemplo a coluna `clientes.arq_licenca` do banco, que guarda o mesmo texto
+    que `salvar_licenca()` escreveria em um `.key`.
+    """
+    return _parse_licenca_conteudo(str(conteudo).strip())
+
+
+def _parse_licenca_conteudo(conteudo: str) -> Tuple[Dict[str, Any], str]:
+    """Interpreta o texto de uma licença (envelope JSON ou token puro).
+
+    Compartilhado por `carregar_licenca_de_arquivo` (lê de disco) e
+    `carregar_licenca_de_conteudo` (recebe a string já pronta, ex.: do banco).
+    """
     token = None
     payload = None
     # tenta detectar JSON com campo `token`

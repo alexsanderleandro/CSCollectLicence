@@ -38,6 +38,7 @@ from licenca import (
     gerar_licenca,
     salvar_licenca,
     carregar_licenca_de_arquivo,
+    carregar_licenca_de_conteudo,
     registrar_tokens_por_cnpjs_single,
     gerar_activation_token,
     listar_clientes,
@@ -515,7 +516,17 @@ class LicencaWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, 'Erro', f'Falha ao carregar: {e}')
             return
-        
+
+        self._popular_campos_de_payload(payload)
+        self.current_path = path
+        QMessageBox.information(self, 'OK', 'Licença carregada com sucesso.')
+
+    def _popular_campos_de_payload(self, payload: dict) -> None:
+        """Preenche os campos da aba 'Gerenciar Licença' a partir de um payload já obtido.
+
+        Compartilhado por `load_license` (arquivo `.key`) e por
+        `_carregar_cliente_do_painel` (registro do banco, via `arq_licenca`).
+        """
         # popular campos de forma direta, removendo getattr redundantes
         self.sql_servidor_edit.setText(payload.get('sql_servidor', ''))
         self.sql_banco_edit.setText(payload.get('sql_banco', ''))
@@ -573,8 +584,6 @@ class LicencaWindow(QMainWindow):
             self.gerado_em_label.setText(f'Gerado em: {ge}')
         else:
             self.gerado_em_label.setText('')
-        self.current_path = path
-        QMessageBox.information(self, 'OK', 'Licença carregada com sucesso.')
 
     def save_license(self) -> None:
         """Gera o token de licença a partir dos campos e salva em arquivo.
@@ -907,6 +916,7 @@ class LicencaWindow(QMainWindow):
         layout.addLayout(row)
 
         self.clientes_table = self._build_readonly_table()
+        self.clientes_table.cellDoubleClicked.connect(self._carregar_cliente_do_painel)
         layout.addWidget(self.clientes_table)
 
         self._reload_clientes_table()
@@ -969,10 +979,15 @@ class LicencaWindow(QMainWindow):
         table.setHorizontalHeaderLabels(self._friendly_columns(columns))
         table.setRowCount(len(rows))
         for r, row in enumerate(rows):
+            # Guarda os valores brutos da linha (não o `str()` de exibição) para
+            # permitir reaproveitar o registro depois (ex.: duplo clique em
+            # "Clientes" carregando a licença sem precisar do arquivo .key).
+            dados_linha = {'columns': columns, 'row': row}
             for c, value in enumerate(row):
                 display = '' if value is None else str(value)
                 item = QTableWidgetItem(display)
                 item.setToolTip(display)
+                item.setData(Qt.UserRole, dados_linha)
                 table.setItem(r, c, item)
         table.resizeColumnsToContents()
         for c in range(len(columns)):
@@ -987,6 +1002,44 @@ class LicencaWindow(QMainWindow):
             QMessageBox.critical(self, 'Erro', f'Falha ao consultar clientes: {e}')
             return
         self._populate_table(self.clientes_table, colunas, linhas)
+
+    def _carregar_cliente_do_painel(self, row: int, column: int) -> None:
+        """Duplo clique num registro de 'Clientes' carrega a licença na aba de gerenciamento.
+
+        Reaproveita o conteúdo completo do `.key` já salvo em `clientes.arq_licenca`
+        (gravado por `save_license` a cada salvamento), sem precisar do arquivo em disco.
+        """
+        item = self.clientes_table.item(row, 0)
+        dados = item.data(Qt.UserRole) if item else None
+        if not dados:
+            return
+        registro = dict(zip(dados['columns'], dados['row']))
+
+        arq_licenca = registro.get('arq_licenca')
+        if not arq_licenca:
+            QMessageBox.warning(
+                self, 'Licença não disponível',
+                'Este registro não tem o conteúdo da licença salvo no banco '
+                '(campo arq_licenca vazio) e não pode ser carregado por aqui.\n\n'
+                'Carregue o arquivo .key correspondente manualmente em "Carregar".'
+            )
+            return
+
+        try:
+            payload, token = carregar_licenca_de_conteudo(arq_licenca)
+        except Exception as e:
+            QMessageBox.critical(self, 'Erro', f'Falha ao carregar licença do banco: {e}')
+            return
+
+        self._popular_campos_de_payload(payload)
+        # 'ativo' só existe na tabela do banco, não no envelope .key.
+        self.ativa_cb.setChecked(bool(registro.get('ativo', True)))
+        # Não veio de um arquivo local — "Salvar licença" deve pedir um caminho novo.
+        self.current_path = None
+
+        self.tabs.setCurrentIndex(0)
+        nome = payload.get('nome_cliente') or registro.get('nome_cliente') or ''
+        QMessageBox.information(self, 'OK', f'Licença de "{nome}" carregada do banco com sucesso.')
 
     def _reload_tokens_table(self) -> None:
         try:
